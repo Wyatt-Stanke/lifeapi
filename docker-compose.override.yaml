@@ -1,0 +1,12 @@
+# Local only (podman/docker compose merge this automatically; Coolify passes `-f
+# docker-compose.yaml` and ignores it). Publishes the services on localhost.
+services:
+  api:
+    ports:
+      - "127.0.0.1:8000:8000"
+  frontend:
+    ports:
+      - "127.0.0.1:8080:8080"
+  scraper:
+    ports:
+      - "127.0.0.1:5900:5900"   # VNC, only while deploy/container/login.sh is running

@@ -1,0 +1,12 @@
+# Never bake credentials or runtime data (DB, logged-in browser profile) into the image.
+.env
+.env.*
+data/
+.venv/
+.git/
+.claude/
+**/__pycache__/
+*.egg-info/
+*.db*
+*.log
+.DS_Store

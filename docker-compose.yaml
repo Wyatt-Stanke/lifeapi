@@ -1,0 +1,65 @@
+# Deployed by Coolify (Docker Compose build pack, built on the server) and run locally with
+# `podman compose up -d --build`, which also merges docker-compose.override.yaml (host
+# ports). No host ports here: on Coolify the proxy routes the domain to `frontend:8080`.
+#
+# All three services share the `data` volume: the SQLite DB, the logged-in browser
+# profile and debug snapshots. Values below come from Coolify's environment variables, or
+# locally from `.env` next to this file.
+
+services:
+  api:
+    build: .
+    command: ["python", "-m", "lifeapi.api", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      LIFEAPI_API_TOKEN: ${LIFEAPI_API_TOKEN:?set LIFEAPI_API_TOKEN, the API's bearer token}
+    volumes:
+      - data:/data
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # The explorer UI. It proxies /api/* (and the docs at /api/docs) to the api service, so
+  # this is the only service that needs a public domain. Enter the API token in the page.
+  frontend:
+    build: .
+    command: ["python", "frontend/serve.py", "--host", "0.0.0.0", "--port", "8080", "--api", "http://api:8000"]
+    expose:
+      - "8080"
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # Scrapes on start, then every LIFEAPI_SCRAPE_INTERVAL seconds. To finish a sign-in
+  # challenge by hand, see "Finishing a sign-in challenge" in the README.
+  scraper:
+    build: .
+    command: ["/app/deploy/container/scrape-loop.sh"]
+    environment:
+      GOOGLE_USERNAME: ${GOOGLE_USERNAME:?}
+      GOOGLE_PASSWORD: ${GOOGLE_PASSWORD:?}
+      COLLEGEBOARD_USERNAME: ${COLLEGEBOARD_USERNAME:?}
+      COLLEGEBOARD_PASSWORD: ${COLLEGEBOARD_PASSWORD:?}
+      LIFEAPI_SCRAPE_INTERVAL: ${LIFEAPI_SCRAPE_INTERVAL:-7200}
+      CLEVER_PORTAL_URL: ${CLEVER_PORTAL_URL:-https://clever.com/in/jerseycity/}
+      INFINITE_CAMPUS_URL: ${INFINITE_CAMPUS_URL:-https://jerseycitynj.infinitecampus.org/campus/portal/students/jerseycity.jsp}
+    volumes:
+      - data:/data
+    # Chrome uses /dev/shm heavily; the 64 MB container default crashes tabs.
+    shm_size: 1gb
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+volumes:
+  data:

@@ -85,6 +85,75 @@ The plists contain absolute paths to this checkout. Logs go to `data/scraper.log
 manual run while the scheduled one is running. On Linux, the cron equivalent is
 `0 */2 * * * cd /path/to/lifeapi && .venv/bin/python -m lifeapi.scraper`.
 
+## Containers (Coolify, podman)
+
+`docker-compose.yaml` runs three services from one image (`Dockerfile`):
+
+| Service | What it runs |
+|---|---|
+| `api` | The API on port 8000, inside the stack's network only. |
+| `frontend` | The explorer on port 8080. It proxies `/api/*` to `api`, so it's the only service that needs a public domain. The API docs are at `/api/docs`. |
+| `scraper` | A scrape at startup, then one every `LIFEAPI_SCRAPE_INTERVAL` seconds (default 7200). |
+
+They share the `data` volume, which holds the DB, the browser profile and debug snapshots.
+On amd64 the image installs Google Chrome. On arm64 (podman on Apple Silicon) it installs
+patchright's Chromium instead, because Chrome isn't published for Linux arm64.
+
+Environment variables: `GOOGLE_USERNAME`, `GOOGLE_PASSWORD`, `COLLEGEBOARD_USERNAME`,
+`COLLEGEBOARD_PASSWORD` and `LIFEAPI_API_TOKEN` are required. Compose refuses to start
+without them. `LIFEAPI_SCRAPE_INTERVAL`, `CLEVER_PORTAL_URL` and `INFINITE_CAMPUS_URL` are
+optional. The API token is required because the deployment is public. Enter it in the
+explorer's "API token" field.
+
+**Locally with podman:**
+
+```sh
+podman compose up -d --build          # reads .env; also merges docker-compose.override.yaml
+podman compose logs -f scraper
+open http://127.0.0.1:8080
+```
+
+The override publishes the API on `127.0.0.1:8000`, the explorer on `127.0.0.1:8080` and
+VNC on `127.0.0.1:5900`. The container has its own browser profile, separate from
+`data/browser-profile/` on the Mac.
+
+**On Coolify:**
+
+1. Create a new resource from the GitHub repository (branch `main`) and choose the
+   **Docker Compose** build pack, with compose file `/docker-compose.yaml`. Coolify builds the
+   image on the server, so no CI is needed. It runs the file with `-f`, so
+   `docker-compose.override.yaml` is ignored.
+2. Under Environment Variables, set the required variables listed above.
+3. Give the `frontend` service a domain with the container port, for example
+   `https://lifeapi.example.com:8080`. Leave `api` and `scraper` without a domain.
+4. Deploy. Watch the `scraper` logs for the first run. The first Google Classroom run
+   reads every detail page and takes about 15 minutes.
+
+### Finishing a sign-in challenge
+
+A Chrome profile from macOS can't be copied over, because its cookies are encrypted with
+the Mac's Keychain. The server signs in from scratch, from an address Google and College
+Board haven't seen before, and they may ask for extra verification. If `/sources` shows a
+login failure, run a headed scrape that you can watch over VNC:
+
+```sh
+# In the scraper container (Coolify: the service's Terminal tab; locally:
+# `podman compose exec scraper sh`):
+VNC_PASSWORD=pick-one /app/deploy/container/login.sh --only google_classroom
+```
+
+It waits for any scheduled run to finish first, then serves the browser on port 5900.
+Locally, connect a VNC client to `127.0.0.1:5900`. On Coolify, tunnel to the container
+from your machine, then connect to `localhost:5900`:
+
+```sh
+ssh you@server "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' <scraper-container>"
+ssh -L 5900:<that IP>:5900 you@server
+```
+
+Finish the sign-in in the Chrome window. The session is saved in the `data` volume, and
+scheduled runs use it from then on.
+
 ## API
 
 All list endpoints return only items still present at the source, unless you pass
@@ -106,11 +175,11 @@ An item looks like this:
 
 ```json
 {
-  "source": "google_classroom", "id": "888776341275", "kind": "assignment",
+  "source": "google_classroom", "id": "234567890123", "kind": "assignment",
   "title": "APV 3 (Unit 1.5 and 1.6)",
-  "url": "https://classroom.google.com/u/0/c/ODU2MTYyMDA0OTky/a/ODg4Nzc2MzQxMjc1/details",
-  "course_id": "856162004992", "course_name": "AP PreCalculus - CARTER - 1-2,2-1,4-3",
-  "description": "AP Videos (APV) ...", "author": "JALIA CARTER",
+  "url": "https://classroom.google.com/u/0/c/MTIzNDU2Nzg5MDEy/a/MjM0NTY3ODkwMTIz/details",
+  "course_id": "123456789012", "course_name": "AP PreCalculus - Period 2",
+  "description": "AP Videos (APV) ...", "author": "Teacher Name",
   "posted_at": "2026-10-02T00:00:00-04:00", "due_at": "2026-10-09T08:00:00-04:00",
   "due_text": "Due Oct 9, 8:00 AM", "status": "assigned",
   "points_possible": 30.0, "score": null,
