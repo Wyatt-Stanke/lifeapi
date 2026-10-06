@@ -1,5 +1,6 @@
-"""Read-only HTTP API over the scraped data. Runs independently of the scraper; it only
-reads the SQLite database the scraper writes."""
+"""HTTP API over the scraped data. Runs independently of the scraper and only reads the
+SQLite database the scraper writes, except for queueing manual sync requests (`/sync`),
+which the scraper picks up."""
 
 from __future__ import annotations
 
@@ -7,10 +8,12 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 
 from .. import config, storage
 from ..models import ItemKind
+from ..scraper import sources as _sources  # noqa: F401  (registers all sources)
+from ..scraper.base import REGISTRY
 
 app = FastAPI(
     title="lifeapi",
@@ -49,22 +52,24 @@ def health() -> dict[str, str]:
 
 @app.get("/sources", dependencies=[Auth])
 def sources(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
-    """Each source's most recent scrape run and its last successful one."""
-    rows = conn.execute(
+    """Every registered source with its most recent scrape run (null if it has never run)
+    and its last successful one."""
+    rows = {r["source"]: r for r in conn.execute(
         """SELECT r.* FROM scrape_runs r
            JOIN (SELECT source, MAX(run_id) AS run_id FROM scrape_runs GROUP BY source) last
-             USING (source, run_id)
-           ORDER BY source"""
-    ).fetchall()
+             USING (source, run_id)"""
+    )}
     out = []
-    for r in rows:
+    for name in sorted(REGISTRY.keys() | rows.keys()):
+        r = rows.get(name)
         ok = conn.execute(
             "SELECT finished_at FROM scrape_runs WHERE source=? AND ok=1 ORDER BY run_id DESC LIMIT 1",
-            (r["source"],),
+            (name,),
         ).fetchone()
         out.append({
-            "source": r["source"],
-            "last_run": {
+            "source": name,
+            "enabled": name in REGISTRY and REGISTRY[name].enabled,
+            "last_run": r and {
                 "started_at": r["started_at"],
                 "finished_at": r["finished_at"],
                 "ok": None if r["ok"] is None else bool(r["ok"]),
@@ -74,6 +79,48 @@ def sources(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
             "last_success_at": ok["finished_at"] if ok else None,
         })
     return out
+
+
+# The sync endpoints write, so they open their own read-write connection (which also
+# creates the table on a database the current scraper hasn't touched yet).
+
+@app.post("/sync", dependencies=[Auth], status_code=202)
+def request_sync(
+    response: Response,
+    source: list[str] | None = Query(None, description="Sources to sync (repeatable); omit for every enabled source"),
+) -> dict[str, Any]:
+    """Ask the scraper to sync now. It picks the request up within seconds if it's idle, or
+    after the current run. If a waiting request already covers these sources, that one is
+    returned (200) instead of queueing another (202). Poll `GET /sync/{request_id}`."""
+    if source and (unknown := set(source) - REGISTRY.keys()):
+        raise HTTPException(400, f"Unknown source(s): {', '.join(sorted(unknown))}. "
+                                 f"Available: {', '.join(sorted(REGISTRY))}")
+    with storage.connect() as conn:
+        request_id, created = storage.request_sync(conn, source or None)
+        row = conn.execute("SELECT * FROM sync_requests WHERE request_id=?", (request_id,)).fetchone()
+    config.SYNC_TRIGGER.touch()
+    if not created:
+        response.status_code = 200
+    return storage.sync_request_to_dict(row)
+
+
+@app.get("/sync", dependencies=[Auth])
+def sync_requests(limit: int = Query(20, ge=1, le=200)) -> list[dict[str, Any]]:
+    """Recent sync requests, newest first. `status` is pending, running, done or failed."""
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM sync_requests ORDER BY request_id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [storage.sync_request_to_dict(r) for r in rows]
+
+
+@app.get("/sync/{request_id}", dependencies=[Auth])
+def sync_request(request_id: int) -> dict[str, Any]:
+    with storage.connect() as conn:
+        row = conn.execute("SELECT * FROM sync_requests WHERE request_id=?", (request_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Sync request not found")
+    return storage.sync_request_to_dict(row)
 
 
 @app.get("/courses", dependencies=[Auth])

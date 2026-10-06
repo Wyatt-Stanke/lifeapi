@@ -14,6 +14,12 @@ DATA_DIR = Path(os.getenv("LIFEAPI_DATA_DIR", PROJECT_ROOT / "data"))
 DB_PATH = Path(os.getenv("LIFEAPI_DB_PATH", DATA_DIR / "lifeapi.db"))
 BROWSER_PROFILE_DIR = Path(os.getenv("LIFEAPI_BROWSER_PROFILE", DATA_DIR / "browser-profile"))
 DEBUG_DIR = Path(os.getenv("LIFEAPI_DEBUG_DIR", DATA_DIR / "debug"))
+# The API touches this file when someone asks for a sync; the launchd sync job watches it
+# and the container's scrape loop polls it. The scraper removes it when it picks requests up.
+SYNC_TRIGGER = DATA_DIR / "sync-requested"
+# Held for the whole of a scraper run, so runs queue up instead of fighting over the
+# browser profile.
+RUN_LOCK = DATA_DIR / "run.lock"
 
 # "chrome" uses the locally installed Google Chrome (best stealth); "" falls back to
 # patchright's bundled Chromium.

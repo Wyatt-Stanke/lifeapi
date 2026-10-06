@@ -8,8 +8,8 @@ The project has two halves that run separately:
 - **Scraper** (`python -m lifeapi.scraper`): a stealth headless Chrome
   ([patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python)) signs in to each
   platform and writes to `data/lifeapi.db`. Run it on a schedule (every 2 hours).
-- **API** (`python -m lifeapi.api`): FastAPI, read-only over the same database. Leave it
-  running.
+- **API** (`python -m lifeapi.api`): FastAPI, read-only over the same database except
+  for queueing manual syncs (`POST /sync`), which the scraper picks up. Leave it running.
 
 | Source | Key | Login | What's collected |
 |---|---|---|---|
@@ -55,6 +55,7 @@ Optional settings:
 .venv/bin/python -m lifeapi.scraper --only vhl infinite_campus
 .venv/bin/python -m lifeapi.scraper --headed         # watch it
 .venv/bin/python -m lifeapi.scraper --list
+.venv/bin/python -m lifeapi.scraper --requested      # only what POST /sync has queued
 
 .venv/bin/python -m lifeapi.api --port 8000          # docs at http://127.0.0.1:8000/docs
 ```
@@ -78,12 +79,27 @@ hours.
 cp deploy/com.lifeapi.*.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.lifeapi.scraper.plist   # every 2 h
 launchctl load ~/Library/LaunchAgents/com.lifeapi.api.plist       # always on, :8000
+launchctl load ~/Library/LaunchAgents/com.lifeapi.sync.plist      # runs POST /sync requests
 ```
 
 The plists contain absolute paths to this checkout. Logs go to `data/scraper.log` and
-`data/api.log`. Only one scraper can use the browser profile at a time, so don't start a
-manual run while the scheduled one is running. On Linux, the cron equivalent is
-`0 */2 * * * cd /path/to/lifeapi && .venv/bin/python -m lifeapi.scraper`.
+`data/api.log`. Only one scraper can use the browser profile at a time. A run that starts
+while another is going waits for it (`data/run.lock`), so manual runs and scheduled ones
+queue up instead of colliding. On Linux, the cron equivalent is
+`0 */2 * * * cd /path/to/lifeapi && .venv/bin/python -m lifeapi.scraper`, plus
+`* * * * * cd /path/to/lifeapi && test -e data/sync-requested && .venv/bin/python -m lifeapi.scraper --requested`
+for manual syncs.
+
+### Syncing on demand
+
+`POST /sync` (all enabled sources) or `POST /sync?source=vhl&source=infinite_campus`
+queues a sync, and the explorer's Sync status page has buttons for it. The API records the
+request in the database and touches `data/sync-requested`. The `com.lifeapi.sync` job
+watches that file and runs `python -m lifeapi.scraper --requested`. In containers, the
+scraper loop checks for it every `LIFEAPI_SYNC_POLL` seconds. If a run is already going, the
+request waits for it to finish. A scheduled run that covers a request's sources settles
+it too. Without the sync job or the container loop, requests stay `pending` until the
+next scheduled run.
 
 ## Containers (Coolify, podman)
 
@@ -93,7 +109,7 @@ manual run while the scheduled one is running. On Linux, the cron equivalent is
 |---|---|
 | `api` | The API on port 8000, inside the stack's network only. |
 | `frontend` | The explorer on port 8080. It proxies `/api/*` to `api`, so it's the only service that needs a public domain. The API docs are at `/api/docs`. |
-| `scraper` | A scrape at startup, then one every `LIFEAPI_SCRAPE_INTERVAL` seconds (default 7200). |
+| `scraper` | A scrape at startup, then one every `LIFEAPI_SCRAPE_INTERVAL` seconds (default 7200). In between, it runs `POST /sync` requests within `LIFEAPI_SYNC_POLL` seconds (default 10). |
 
 They share the `data` volume, which holds the DB, the browser profile and debug snapshots.
 On amd64 the image installs Google Chrome. On arm64 (podman on Apple Silicon) it installs
@@ -101,7 +117,7 @@ patchright's Chromium instead, because Chrome isn't published for Linux arm64.
 
 Environment variables: `GOOGLE_USERNAME`, `GOOGLE_PASSWORD`, `COLLEGEBOARD_USERNAME`,
 `COLLEGEBOARD_PASSWORD` and `LIFEAPI_API_TOKEN` are required. Compose refuses to start
-without them. `LIFEAPI_SCRAPE_INTERVAL`, `LIFEAPI_SCRAPE_MAX_RUN`, `CLEVER_PORTAL_URL` and
+without them. `LIFEAPI_SCRAPE_INTERVAL`, `LIFEAPI_SCRAPE_MAX_RUN`, `LIFEAPI_SYNC_POLL`, `CLEVER_PORTAL_URL` and
 `INFINITE_CAMPUS_URL` are optional.
 
 Every service has a healthcheck. `api` and `frontend` are checked over HTTP, and
@@ -173,7 +189,10 @@ All list endpoints return only items still present at the source, unless you pas
 | `GET /items/{source}/{id}` | One item. |
 | `GET /courses` | Classes per source. |
 | `GET /grades` | Infinite Campus grades. Filters: `source`, `term`. |
-| `GET /sources` | Last run per source: when it ran, whether it succeeded, the error, and counts. |
+| `GET /sources` | Every source, whether it's enabled, and its last run (`null` if never): when it ran, whether it succeeded, the error, and counts. |
+| `POST /sync` | Queue a sync now. `source` (repeatable) limits it; omit for every enabled source. Returns the request (202, or 200 if a waiting request already covers it). See [Syncing on demand](#syncing-on-demand). |
+| `GET /sync` | Recent sync requests, newest first. `status`: `pending`, `running`, `done` or `failed` (with `error`). |
+| `GET /sync/{request_id}` | One sync request. |
 | `GET /health` | Liveness check. |
 
 An item looks like this:

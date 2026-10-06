@@ -42,7 +42,8 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # Scrapes on start, then every LIFEAPI_SCRAPE_INTERVAL seconds. To finish a sign-in
+  # Scrapes on start, then every LIFEAPI_SCRAPE_INTERVAL seconds, plus whatever POST /sync
+  # asks for (checked every LIFEAPI_SYNC_POLL seconds). To finish a sign-in
   # challenge by hand, see "Finishing a sign-in challenge" in the README.
   scraper:
     build: .
@@ -54,6 +55,7 @@ services:
       COLLEGEBOARD_PASSWORD: ${COLLEGEBOARD_PASSWORD:?}
       LIFEAPI_SCRAPE_INTERVAL: ${LIFEAPI_SCRAPE_INTERVAL:-7200}
       LIFEAPI_SCRAPE_MAX_RUN: ${LIFEAPI_SCRAPE_MAX_RUN:-3600}
+      LIFEAPI_SYNC_POLL: ${LIFEAPI_SYNC_POLL:-10}
       CLEVER_PORTAL_URL: ${CLEVER_PORTAL_URL:-https://clever.com/in/jerseycity/}
       INFINITE_CAMPUS_URL: ${INFINITE_CAMPUS_URL:-https://jerseycitynj.infinitecampus.org/campus/portal/students/jerseycity.jsp}
     volumes:

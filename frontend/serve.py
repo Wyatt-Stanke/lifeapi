@@ -1,7 +1,7 @@
 """Dev server for the explorer frontend: `python frontend/serve.py [--port 8080] [--api http://127.0.0.1:8000]`.
 
-Proxies /api/* to the API, so the page can call it same-origin without the API needing
-CORS, and serves index.html for every other path (so `/<source URL>` links reach the page's
+Proxies /api/* (GET and POST) to the API, so the page can call it same-origin without the
+API needing CORS, and serves index.html for every other path (so `/<source URL>` links reach the page's
 link resolver). Stdlib only.
 """
 
@@ -18,6 +18,13 @@ INDEX = Path(__file__).resolve().parent / "index.html"
 
 def make_handler(api: str) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            if not self.path.startswith("/api/"):
+                self._send(405, "text/plain", b"Method not allowed")
+                return
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            self._proxy(self.path[len("/api"):], "POST", body)
+
         def do_GET(self) -> None:
             if self.path.startswith("/api/"):
                 target = self.path[len("/api"):]
@@ -31,7 +38,12 @@ def make_handler(api: str) -> type[BaseHTTPRequestHandler]:
                 # (e.g. /https://classroom.google.com/u/1/c/.../a/.../details).
                 self._send(200, "text/html; charset=utf-8", INDEX.read_bytes())
                 return
-            req = urllib.request.Request(api + target)
+            self._proxy(target)
+
+        def _proxy(self, target: str, method: str = "GET", body: bytes | None = None) -> None:
+            req = urllib.request.Request(api + target, data=body, method=method)
+            if ctype := self.headers.get("Content-Type"):
+                req.add_header("Content-Type", ctype)
             if auth := self.headers.get("Authorization"):
                 req.add_header("Authorization", auth)
             try:
