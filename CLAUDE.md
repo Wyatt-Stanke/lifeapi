@@ -100,7 +100,12 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
     text, empty fields).
   - Detail headers render in stages (author • date, then points, then category), and
     nothing marks points as pending, so `DETAIL_READY_JS` also waits for the header to
-    stop changing. Reading early stores `points_possible=None`.
+    stop changing. Reading early stores `points_possible=None`. The classwork list is the
+    same: rows render topic by topic and categories fill in afterwards, so
+    `LIST_READY_JS` waits for no spinners and stable text. Reading a partial list
+    soft-deletes the rows it missed.
+  - Titles in `aria-label` keep the teacher's stray spaces, while `innerText` collapses
+    them. Normalise whitespace before matching one against the other.
   - Incremental refresh (`_needs_detail`): a detail page is re-read when the item is new,
     its classwork-row signature changed, it's due or posted in the last 7 days, or its
     cached detail is more than 24h old. Otherwise cached fields are merged from

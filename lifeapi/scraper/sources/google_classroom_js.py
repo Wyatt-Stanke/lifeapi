@@ -31,12 +31,14 @@ CLASSWORK_JS = r"""
     const btn = li.querySelector('[role="button"][aria-label]');
     // Visible label text looks like "Assignment", "Completed Assignment", "Material", "Question"...
     const lines = li.innerText.split('\n').map(s => s.trim()).filter(Boolean);
-    const title = btn ? btn.getAttribute('aria-label') : null;
+    // aria-label keeps the teacher's stray spaces; innerText collapses them.
+    const title = btn ? btn.getAttribute('aria-label').replace(/\s+/g, ' ').trim() : null;
     const dateLine = lines.find(l => /^(Due|Posted|Edited|No due date)/.test(l)) || null;
     const topicEl = li.closest('[data-topic-id]');
     const topic = topicEl ? (topicEl.getAttribute('aria-label') || '').replace(/^Topic /, '') || null : null;
-    const ti = lines.indexOf(title);
-    const after = ti >= 0 ? lines.slice(ti + 1) : lines;
+    const ti = lines.findIndex(l => l.replace(/\s+/g, ' ') === title);
+    // Without the title we can't tell the category from the row's label ("Assignment").
+    const after = ti >= 0 ? lines.slice(ti + 1) : [];
     const commentMatch = li.innerText.match(/(\d+) comments?/);
     // The grading category appears between the title/date and the trailing date column.
     const category = after.find(l => l !== dateLine && !/^(more_vert|More options|comment|\d+|\d+ comments?)$/.test(l) && !/^(Due|Posted|Edited)/.test(l)) || null;
@@ -77,10 +79,11 @@ DETAIL_JS = r"""
   const graded = htext.match(/([\d.]+) points out of possible ([\d.]+)/);
   const points = htext.match(/(?:^|\n)([\d.]+) points?(?:\n|$)/);
   const due = hlines.find(l => /^Due /.test(l) || l === 'No due date') || null;
-  // Category: the line right before the "•" that precedes the points, if any.
   let category = null;
+  // "author • date [category] • points|grading period": no line between the date and the
+  // second "•" means no category.
   const secondDot = meta.indexOf('•', dotIdx + 1);
-  if (secondDot > 0) category = meta[secondDot - 1];
+  if (secondDot > dotIdx + 2) category = meta[secondDot - 1];
 
   // Description: the first block of text in the main column after the header that isn't
   // an attachment, the "Your work" panel, a comment section or a button.

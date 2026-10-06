@@ -49,12 +49,21 @@ DETAIL_READY_JS = r"""quiet => {
 
 # Resolves once the classwork list or the stream has rendered: "rows" once it shows items,
 # "empty" once it shows the empty-state message. Anything else times out rather than being
-# taken for an empty class, which would soft-delete the class's items.
-LIST_READY_JS = r"""([rows, empty]) => {
-  if (document.querySelector(rows)) return 'rows';
+# taken for an empty class, which would soft-delete the class's items. Rows render topic by
+# topic (each with its own spinner) and categories fill in after the rows, with no marker,
+# so "rows" also waits for no spinners and for the page text to stop changing for `quiet` ms.
+LIST_READY_JS = r"""([rows, empty, quiet]) => {
   // Empty classwork pages have no [role="main"].
   const main = document.querySelector('[role="main"]') || document.body;
-  return new RegExp(empty).test(main.innerText) ? 'empty' : false;
+  if (!document.querySelector(rows)) return new RegExp(empty).test(main.innerText) ? 'empty' : false;
+  const text = main.innerText;
+  const s = window.__lifeapiList;
+  const loading = [...document.querySelectorAll('[role="progressbar"]')].some(e => e.checkVisibility());
+  if (loading || !s || s.text !== text) {
+    window.__lifeapiList = {text, since: performance.now()};
+    return false;
+  }
+  return performance.now() - s.since >= quiet ? 'rows' : false;
 }"""
 EMPTY_CLASSWORK = r"No assignments yet"
 EMPTY_STREAM = r"This is where you.ll see updates for this class"
@@ -119,7 +128,7 @@ class GoogleClassroom(Source):
     async def _list_state(self, page: Page, rows: str, empty: str) -> str:
         """Wait for a classwork list or stream to render: "rows" or "empty"."""
         state = await page.wait_for_function(
-            LIST_READY_JS, arg=[rows, empty], timeout=config.timeout(30_000)
+            LIST_READY_JS, arg=[rows, empty, config.timeout(300)], timeout=config.timeout(30_000)
         )
         return await state.json_value()
 
@@ -163,6 +172,7 @@ class GoogleClassroom(Source):
                 arg=[rows_sel, n],
                 timeout=config.timeout(15_000),
             )
+        await self._list_state(page, rows_sel, EMPTY_CLASSWORK)  # let expanded rows settle
         rows = await page.evaluate(js.CLASSWORK_JS)
 
         items: list[Item] = []
