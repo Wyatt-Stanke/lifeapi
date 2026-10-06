@@ -21,20 +21,60 @@ BASE = "https://classroom.google.com"
 # data-stream-item-type on classwork rows -> (kind, URL path segment)
 TYPE_MAP = {"1": (ItemKind.ASSIGNMENT, "a"), "4": (ItemKind.QUESTION, "sa"), "5": (ItemKind.MATERIAL, "m")}
 
-DETAIL_READY_JS = r"""() => {
+# The header renders in stages ("author • date", then points, then category) and nothing
+# marks the points as pending: an ungraded item looks the same until they arrive. So beyond
+# the explicit loading signals, wait until the header has stopped changing for `quiet` ms.
+DETAIL_READY_JS = r"""quiet => {
   const visible = el => el.checkVisibility ? el.checkVisibility() : !!el.offsetParent;
   const h = [...document.querySelectorAll('[data-stream-item-id]')].find(visible);
   if (!h || !h.innerText.includes('•')) return false;
+  // "date [category] • points": a second "•" with nothing after it is points still loading.
+  const lines = h.innerText.split('\n').map(s => s.trim()).filter(Boolean);
+  const dot2 = lines.indexOf('•', lines.indexOf('•') + 1);
+  if (dot2 >= 0 && (dot2 + 1 >= lines.length || /^(Due |No due date)/.test(lines[dot2 + 1]))) return false;
+  // Spinners, and the "Your work" panel's "Loading submission details" placeholder.
+  if ([...document.querySelectorAll('[role="progressbar"]')].some(visible)) return false;
+  const main = h.closest('[role="main"]') || document.body;
+  if (/^Loading submission details/m.test(main.innerText)) return false;
   const st = [...document.querySelectorAll('span[data-submission-id]')].find(visible);
   const first = st ? st.innerText.trim().split('\n')[0] : '';
-  return !st || (first && !/loading/i.test(first));
+  if (st && (!first || /loading/i.test(first))) return false;
+  const s = window.__lifeapiHeader;
+  if (!s || s.text !== h.innerText) {
+    window.__lifeapiHeader = {text: h.innerText, since: performance.now()};
+    return false;
+  }
+  return performance.now() - s.since >= quiet;
+}"""
+
+# Resolves once the classwork list or the stream has rendered: "rows" once it shows items,
+# "empty" once it shows the empty-state message. Anything else times out rather than being
+# taken for an empty class, which would soft-delete the class's items.
+LIST_READY_JS = r"""([rows, empty]) => {
+  if (document.querySelector(rows)) return 'rows';
+  // Empty classwork pages have no [role="main"].
+  const main = document.querySelector('[role="main"]') || document.body;
+  return new RegExp(empty).test(main.innerText) ? 'empty' : false;
+}"""
+EMPTY_CLASSWORK = r"No assignments yet"
+EMPTY_STREAM = r"This is where you.ll see updates for this class"
+
+# Scrolling the stream either renders more posts (usually at once: they're prefetched) or
+# shows a "Loading…" spinner while it fetches them. The stream has ended once neither has
+# happened for `quiet` ms. `window.__lifeapiQuiet` is reset before each scroll.
+MORE_POSTS_JS = r"""([n, quiet]) => {
+  if (document.querySelectorAll('[data-stream-item-id]').length > n) return 'more';
+  const s = window.__lifeapiQuiet ??= {since: performance.now()};
+  const loading = [...document.querySelectorAll('[role="progressbar"]')].some(e => e.checkVisibility());
+  if (loading) s.since = performance.now();
+  return performance.now() - s.since > quiet ? 'end' : false;
 }"""
 
 # An item's detail page is re-read if the classwork row changed, if it's "recent"
 # (anything can still change: grades, comments, status), or if the cached copy is old.
 RECENT = timedelta(days=7)
 FULL_REFRESH = timedelta(hours=24)
-MAX_STREAM_SCROLLS = 15
+MAX_STREAM_SCROLLS = 100
 # Classroom shows the year on dates only when it isn't the current year.
 CY = "current_year"
 
@@ -76,6 +116,13 @@ class GoogleClassroom(Source):
             await page.goto(url)
         await page.wait_for_selector(ready, timeout=config.timeout(30_000))
 
+    async def _list_state(self, page: Page, rows: str, empty: str) -> str:
+        """Wait for a classwork list or stream to render: "rows" or "empty"."""
+        state = await page.wait_for_function(
+            LIST_READY_JS, arg=[rows, empty], timeout=config.timeout(30_000)
+        )
+        return await state.json_value()
+
     # -- courses ----------------------------------------------------------------------
 
     async def _courses(self, page: Page) -> list[Course]:
@@ -100,10 +147,8 @@ class GoogleClassroom(Source):
     async def _classwork(self, page: Page, course: Course) -> list[Item]:
         cid = b64(course.id)
         await page.goto(f"{BASE}/u/0/w/{cid}/t/all")
-        await page.wait_for_load_state("domcontentloaded")
-        try:
-            await page.wait_for_selector("li[data-stream-item-id]", timeout=config.timeout(10_000))
-        except Exception:
+        rows_sel = "li[data-stream-item-id]"
+        if await self._list_state(page, rows_sel, EMPTY_CLASSWORK) == "empty":
             self.log.info("%s: no classwork", course.name)
             return []
         # Topics show 10 items until "View more" is clicked.
@@ -111,8 +156,13 @@ class GoogleClassroom(Source):
         for _ in range(50):
             if not await more.count():
                 break
+            n = await page.locator(rows_sel).count()
             await more.first.click()
-            await page.wait_for_timeout(1200)
+            await page.wait_for_function(
+                "([sel, n]) => document.querySelectorAll(sel).length > n",
+                arg=[rows_sel, n],
+                timeout=config.timeout(15_000),
+            )
         rows = await page.evaluate(js.CLASSWORK_JS)
 
         items: list[Item] = []
@@ -193,15 +243,18 @@ class GoogleClassroom(Source):
         # Wait until the header has rendered its "author • date" line and the submission
         # status has finished loading. Question pages redirect (/a/ -> /mc/) and render late.
         try:
-            await page.wait_for_function(DETAIL_READY_JS, timeout=config.timeout(15_000))
+            await page.wait_for_function(
+                DETAIL_READY_JS, arg=config.timeout(300), timeout=config.timeout(15_000)
+            )
         except Exception:
             # Some pages (multiple-choice questions) only render in the foreground tab.
             await page.bring_to_front()
             try:
-                await page.wait_for_function(DETAIL_READY_JS, timeout=config.timeout(15_000))
+                await page.wait_for_function(
+                    DETAIL_READY_JS, arg=config.timeout(300), timeout=config.timeout(15_000)
+                )
             except Exception as e:
                 raise RuntimeError(f"detail page never finished rendering: {item.url}") from e
-        await page.wait_for_timeout(300)
         d = await page.evaluate(js.DETAIL_JS)
         if not d:
             return
@@ -238,19 +291,26 @@ class GoogleClassroom(Source):
     async def _announcements(self, page: Page, course: Course) -> list[Item]:
         cid = b64(course.id)
         await page.goto(f"{BASE}/u/0/c/{cid}")
-        try:
-            await page.wait_for_selector("[data-stream-item-id]", timeout=config.timeout(10_000))
-        except Exception:
+        if await self._list_state(page, "[data-stream-item-id]", EMPTY_STREAM) == "empty":
             return []
-        # The stream lazy-loads older posts as you scroll.
-        count = -1
+        # The stream lazy-loads older posts as you scroll. A scroll that lands while it's
+        # still rendering or prefetching is ignored, so it has ended only after two quiet
+        # scrolls in a row.
+        quiet = 0
         for _ in range(MAX_STREAM_SCROLLS):
             n = await page.locator("[data-stream-item-id]").count()
-            if n == count:
-                break
-            count = n
+            await page.evaluate("() => { delete window.__lifeapiQuiet; }")
             await page.mouse.wheel(0, 30_000)
-            await page.wait_for_timeout(1500)
+            more = await page.wait_for_function(
+                MORE_POSTS_JS, arg=[n, config.timeout(1_000)], timeout=config.timeout(30_000)
+            )
+            state = await more.json_value()
+            self.log.debug("%s: stream scroll from %d posts: %s", course.name, n, state)
+            quiet = quiet + 1 if state == "end" else 0
+            if quiet == 2:
+                break
+        else:
+            self.log.warning("%s: stopped after %d stream scrolls", course.name, MAX_STREAM_SCROLLS)
         posts = await page.evaluate(js.STREAM_JS)
 
         items: list[Item] = []
@@ -289,8 +349,19 @@ class GoogleClassroom(Source):
 
     async def _fill_post_comments(self, page: Page, item: Item) -> None:
         await page.goto(item.url)
-        await page.wait_for_selector("[data-comment-id]", state="attached", timeout=config.timeout(20_000))
-        await page.wait_for_timeout(500)
+        # Wait for as many comments as the stream said the post has (wide layouts render
+        # each one twice, so count distinct ids).
+        try:
+            await page.wait_for_function(
+                """n => new Set([...document.querySelectorAll('[data-comment-id]')]
+                       .map(e => e.dataset.commentId)).size >= n""",
+                arg=item.extra.get("comment_count") or 1,
+                timeout=config.timeout(20_000),
+            )
+        except Exception:
+            if not await page.locator("[data-comment-id]").count():
+                raise
+            self.log.warning("Fewer comments than expected on %s", item.url)
         d = await page.evaluate(js.DETAIL_JS)
         if d:
             item.comments = [

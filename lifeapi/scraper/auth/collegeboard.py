@@ -7,14 +7,18 @@ import logging
 from patchright.async_api import Page
 
 from ... import config
-from ..browser import dump_debug
+from ..browser import dump_debug, wait_gone
 from .google import LoginError
 
 log = logging.getLogger(__name__)
 
 
+def is_collegeboard_login_url(url: str) -> bool:
+    return "idp.collegeboard.org" in url or "account.collegeboard.org/login" in url
+
+
 def on_collegeboard_login(page: Page) -> bool:
-    return "idp.collegeboard.org" in page.url or "account.collegeboard.org/login" in page.url
+    return is_collegeboard_login_url(page.url)
 
 
 async def collegeboard_login(page: Page) -> None:
@@ -23,13 +27,6 @@ async def collegeboard_login(page: Page) -> None:
         if not on_collegeboard_login(page):
             return
         await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_timeout(1500)
-        url = page.url
-
-        # Cookie banner can cover the form.
-        reject = page.locator("#onetrust-reject-all-handler:visible, button:has-text('Reject Optional'):visible")
-        if await reject.count():
-            await reject.first.click()
 
         ident = page.locator('input[name="identifier"]:visible')
         pw = page.locator('input[name="credentials.passcode"]:visible, input[type="password"]:visible')
@@ -43,22 +40,29 @@ async def collegeboard_login(page: Page) -> None:
             if not on_collegeboard_login(page):
                 return
             break
+
+        # Cookie banner can cover the form.
+        reject = page.locator("#onetrust-reject-all-handler:visible, button:has-text('Reject Optional'):visible")
+        if await reject.count():
+            await reject.first.click()
+
         if await choose_pw.count():
             await choose_pw.first.click()
             await page.locator('input[type="password"]:visible').first.wait_for(timeout=config.timeout(10_000))
             continue
         if await pw.count():
-            await pw.first.fill(config.credential("COLLEGEBOARD_PASSWORD"))
-            await page.keyboard.press("Enter")
+            field, value = pw, config.credential("COLLEGEBOARD_PASSWORD")
         elif await ident.count():
-            await ident.first.fill(config.credential("COLLEGEBOARD_USERNAME"))
-            await page.keyboard.press("Enter")
+            field, value = ident, config.credential("COLLEGEBOARD_USERNAME")
         else:
             break
-        try:
-            await page.wait_for_url(lambda u: u != url, timeout=config.timeout(15_000))
-        except Exception:
-            pass  # Okta swaps steps in place without a URL change
+        control = await field.first.element_handle()
+        await control.fill(value)
+        await page.keyboard.press("Enter")
+        # Okta either navigates or swaps the step in place. If the field stays (bad
+        # password, MFA prompt), stop rather than submit it again.
+        if not await wait_gone(control):
+            break
 
     if on_collegeboard_login(page):
         await dump_debug(page, "collegeboard_login_stuck")

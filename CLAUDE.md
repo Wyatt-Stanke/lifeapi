@@ -60,6 +60,11 @@ College Board API responses contain access tokens, so delete scratch captures wh
 - `dates.py` parses dates the way sites display them. Google Classroom omits the year only
   for dates in the current calendar year, so it uses `prefer="current_year"`. Date-only
   values become 23:59 for deadlines and 00:00 for posted dates (`posted=True`).
+- Waits: no fixed pauses (`wait_for_timeout`). Wait for a condition, and put every
+  deadline through `config.timeout(ms)` (scaled by `LIFEAPI_TIMEOUT_SCALE` for slow hosts).
+  Never treat a timeout as "empty": wait for the page's explicit empty state instead,
+  because returning no items soft-deletes them. `browser.wait_until()` races a locator
+  against a URL; `browser.wait_gone()` confirms a submitted login step went away.
 - `browser.dump_debug()` writes a screenshot and HTML to `data/debug/`. Sources call it
   before re-raising on unexpected pages.
 
@@ -93,6 +98,9 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   - Detail pages are read in parallel tabs. `browser.py` passes flags that keep
     background tabs rendering; without them, `innerText` comes back unrendered (run-on
     text, empty fields).
+  - Detail headers render in stages (author • date, then points, then category), and
+    nothing marks points as pending, so `DETAIL_READY_JS` also waits for the header to
+    stop changing. Reading early stores `points_possible=None`.
   - Incremental refresh (`_needs_detail`): a detail page is re-read when the item is new,
     its classwork-row signature changed, it's due or posted in the last 7 days, or its
     cached detail is more than 24h old. Otherwise cached fields are merged from

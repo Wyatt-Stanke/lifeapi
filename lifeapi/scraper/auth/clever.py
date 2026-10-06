@@ -9,8 +9,8 @@ import re
 from patchright.async_api import BrowserContext, Page
 
 from ... import config
-from ..browser import dump_debug
-from .google import LoginError, google_login, on_google_login
+from ..browser import dump_debug, wait_until
+from .google import LoginError, google_login, is_google_login_url, on_google_login
 
 log = logging.getLogger(__name__)
 
@@ -18,25 +18,36 @@ log = logging.getLogger(__name__)
 async def clever_dashboard(page: Page) -> None:
     """Get `page` onto the signed-in Clever student dashboard."""
     await page.goto(config.CLEVER_PORTAL_URL)
+    google_btn = page.get_by_role("link", name=re.compile("google", re.I)).or_(
+        page.get_by_role("button", name=re.compile("google", re.I))
+    )
+    apps = page.get_by_text(re.compile("My apps|Apps", re.I))
     for _ in range(4):
         await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_timeout(2000)
+        # Wait for the page to show one of the states handled below.
+        await wait_until(page, google_btn.or_(apps), url=lambda u: is_google_login_url(u) or _on_dashboard(u))
         if on_google_login(page):
             await google_login(page)
             continue
-        if re.search(r"clever\.com/(in/)?[^/]*/?student|/applications|clever\.com/home", page.url):
+        if _on_dashboard(page.url):
             return
-        google_btn = page.get_by_role("link", name=re.compile("google", re.I)).or_(
-            page.get_by_role("button", name=re.compile("google", re.I))
-        )
         if await google_btn.count():
+            url = page.url
             await google_btn.first.click()
+            try:
+                await page.wait_for_url(lambda u: u != url, timeout=config.timeout(15_000))
+            except Exception:
+                pass
             continue
-        if "clever.com" in page.url and await page.get_by_text(re.compile("My apps|Apps", re.I)).count():
+        if "clever.com" in page.url and await apps.count():
             return
     if not re.search(r"clever\.com", page.url):
         await dump_debug(page, "clever_stuck")
         raise LoginError(f"Could not reach the Clever dashboard (ended at {page.url})")
+
+
+def _on_dashboard(url: str) -> bool:
+    return bool(re.search(r"clever\.com/(in/)?[^/]*/?student|/applications|clever\.com/home", url))
 
 
 async def launch_app(context: BrowserContext, page: Page, app_name: str) -> Page:

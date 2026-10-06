@@ -14,7 +14,7 @@ from patchright.async_api import Page
 
 from ... import config
 from ...models import Course, Grade, GradeEntry, ScrapeResult
-from ..auth.google import LoginError, google_login, on_google_login
+from ..auth.google import LoginError, google_login, is_google_login_url, on_google_login
 from ..base import Source, register
 from ..browser import dump_debug
 
@@ -54,7 +54,13 @@ class InfiniteCampus(Source):
         sso = page.locator("#samlLoginLink")
         await sso.wait_for(timeout=config.timeout(20_000))
         await sso.click()
-        await page.wait_for_timeout(2000)
+        # SSO goes through Google, which either asks us to sign in or redirects straight back.
+        try:
+            await page.wait_for_url(
+                lambda u: is_google_login_url(u) or "/nav-wrapper/" in u, timeout=config.timeout(30_000)
+            )
+        except Exception:
+            pass  # reported by the portal wait below
         if on_google_login(page):
             await google_login(page)
         try:
