@@ -8,6 +8,7 @@ link resolver). Stdlib only.
 from __future__ import annotations
 
 import argparse
+import shutil
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,16 +32,43 @@ def make_handler(api: str) -> type[BaseHTTPRequestHandler]:
                 # (e.g. /https://classroom.google.com/u/1/c/.../a/.../details).
                 self._send(200, "text/html; charset=utf-8", INDEX.read_bytes())
                 return
-            req = urllib.request.Request(api + target)
+            self._proxy(target)
+
+        # Attachment file requests and deletes (see lifeapi/files.py).
+        def do_POST(self) -> None:
+            self._api_only()
+
+        def do_DELETE(self) -> None:
+            self._api_only()
+
+        def _api_only(self) -> None:
+            if self.path.startswith("/api/"):
+                self._proxy(self.path[len("/api"):])
+            else:
+                self._send(405, "text/plain", b"Method not allowed")
+
+        def _proxy(self, target: str) -> None:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if length else None
+            req = urllib.request.Request(api + target, data=body, method=self.command)
             if auth := self.headers.get("Authorization"):
                 req.add_header("Authorization", auth)
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
-                    self._send(resp.status, resp.headers.get("Content-Type", ""), resp.read())
+                    self._relay(resp.status, resp)
             except urllib.error.HTTPError as e:
-                self._send(e.code, e.headers.get("Content-Type", ""), e.read())
+                self._relay(e.code, e)
             except OSError as e:
                 self._send(502, "application/json", f'{{"detail": "API unreachable at {api}: {e}"}}'.encode())
+
+        def _relay(self, status: int, resp) -> None:
+            # Streamed, so downloaded attachment files don't have to fit in memory.
+            self.send_response(status)
+            for name in ("Content-Type", "Content-Length", "Content-Disposition"):
+                if value := resp.headers.get(name):
+                    self.send_header(name, value)
+            self.end_headers()
+            shutil.copyfileobj(resp, self.wfile)
 
         def _send(self, status: int, ctype: str, body: bytes) -> None:
             self.send_response(status)

@@ -51,15 +51,16 @@ tokenInput.addEventListener("change", () => {
   route();
 });
 
-async function api(path, params = {}) {
+const authHeaders = () => tokenInput.value ? { Authorization: `Bearer ${tokenInput.value}` } : {};
+
+async function api(path, params = {}, method = "GET") {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v == null || v === "" || v === false) continue;
     for (const x of [].concat(v)) qs.append(k, x);
   }
   const url = API + path + (qs.toString() ? "?" + qs : "");
-  const headers = tokenInput.value ? { Authorization: `Bearer ${tokenInput.value}` } : {};
-  const res = await fetch(url, { headers });
+  const res = await fetch(url, { headers: authHeaders(), method });
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(`${res.status}: ${body?.detail ?? res.statusText} (${url})`);
   return body;
@@ -150,6 +151,51 @@ function attachments(list) {
   return h("ul", {}, list.map((a) => h("li", {},
     a.url ? h("a", { href: a.url, target: "_blank" }, a.title || a.url) : a.title,
     a.type ? h("small", {}, ` (${a.type})`) : null)));
+}
+
+// ---------- attachment files ----------
+
+async function saveFile(f) {
+  // A plain link can't send the bearer token, so fetch the file and save the blob.
+  const res = await fetch(API + f.content_url, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`${res.status}: ${(await res.json().catch(() => null))?.detail ?? res.statusText}`);
+  const a = h("a", { href: URL.createObjectURL(await res.blob()), download: f.filename || f.key });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
+}
+
+function fileButtons(source, id, att) {
+  const status = h("small");
+  const request = async (fmt) => {
+    status.textContent = ` ${fmt}: requesting…`;
+    try {
+      let f = await api(`/items/${encodeURIComponent(source)}/${encodeURIComponent(id)}/attachments/${att.google_id}/files`, { format: fmt }, "POST");
+      while (f.status === "pending" || f.status === "downloading") {
+        status.textContent = ` ${fmt}: ${f.status}…`;
+        await new Promise((r) => setTimeout(r, 2000));
+        f = await api(`/files/${f.key}`);
+      }
+      if (f.status !== "ready") throw new Error(f.error || f.status);
+      status.textContent = "";
+      await saveFile(f);
+    } catch (e) {
+      status.textContent = ` ${fmt} failed: ${e.message}`;
+    }
+  };
+  return h("span", {}, " — ",
+    att.formats.map((fmt) => [h("button", { onclick: () => request(fmt) },
+      fmt === "original" ? "Download" : fmt.toUpperCase(), att.files[fmt]?.status === "ready" ? " ✓" : ""), " "]),
+    status);
+}
+
+function downloads(source, id, atts) {
+  const list = atts.filter((a) => a.formats.length);
+  if (!list.length) return null;
+  return [h("h2", {}, "Download attachments"), h("ul", {}, list.map((a) => h("li", {},
+    a.title || a.url, h("small", {}, ` (${a.origin === "submitted_work" ? "your work" : a.type || a.kind})`),
+    fileButtons(source, id, a))))];
 }
 
 // ---------- views ----------
@@ -288,7 +334,8 @@ async function viewCourse(source, id, params) {
 }
 
 async function viewItem(source, id) {
-  const it = await api(`/items/${encodeURIComponent(source)}/${encodeURIComponent(id)}`);
+  const path = `/items/${encodeURIComponent(source)}/${encodeURIComponent(id)}`;
+  const [it, atts] = await Promise.all([api(path), api(`${path}/attachments`).catch(() => [])]);
   const facts = [
     ["Course", courseLink(it)],
     ["From", `${sourceName(it.source)} · ${label(it.kind)}`],
@@ -307,6 +354,7 @@ async function viewItem(source, id) {
     it.description ? [h("h2", {}, "Description"), text(it.description)] : null,
     it.attachments?.length ? [h("h2", {}, "Attachments"), attachments(it.attachments)] : null,
     it.extra?.submitted_work?.length ? [h("h2", {}, "Your submitted work"), attachments(it.extra.submitted_work)] : null,
+    downloads(source, id, atts),
     it.comments?.length ? [h("h2", {}, "Comments"), h("ul", {}, it.comments.map((c) => h("li", {},
       h("strong", {}, c.author || "?"), c.private ? " (private)" : "", c.posted_at ? ` · ${c.posted_at}` : "", ": ", c.text)))] : null,
     h("details", {}, h("summary", {}, "All data"), h("pre", {}, JSON.stringify(it, null, 2))),

@@ -69,6 +69,25 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
     items INTEGER,
     grades INTEGER
 );
+-- Attachment downloads, requested through the API and fetched by the files worker.
+-- See lifeapi/files.py.
+CREATE TABLE IF NOT EXISTS files (
+    key TEXT PRIMARY KEY,          -- "<google id>.<format>"
+    google_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    format TEXT NOT NULL,
+    title TEXT,
+    source_url TEXT,
+    status TEXT NOT NULL,          -- pending, downloading, ready, failed, evicted
+    error TEXT,
+    filename TEXT,
+    content_type TEXT,
+    size INTEGER,
+    requested_at TEXT NOT NULL,
+    finished_at TEXT,
+    last_accessed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS files_status ON files (status);
 """
 
 
@@ -96,7 +115,9 @@ def connect(path: Path | None = None, readonly: bool = False) -> Iterator[sqlite
         conn.execute("PRAGMA query_only=ON")
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path)
+        # The scraper, the files worker and the API's file requests all write, so wait out
+        # each other's transactions. check_same_thread=False: see the readonly branch.
+        conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")  # lets the API read while the scraper writes
         conn.executescript(SCHEMA)
     conn.row_factory = sqlite3.Row

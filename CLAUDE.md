@@ -5,10 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Overview
 
 lifeapi collects a student's schoolwork from several platforms into one SQLite database
-and serves it as a read-only HTTP API. The scraper and the API are separate processes on
-separate schedules. They share only `lifeapi/models.py` (pydantic models) and
-`lifeapi/storage.py` (SQLite access). The scraper runs every 2 hours via launchd
-(`deploy/`). The API stays up.
+and serves it as an HTTP API. The scraper and the API are separate processes on
+separate schedules. They share only `lifeapi/models.py` (pydantic models),
+`lifeapi/storage.py` (SQLite access) and `lifeapi/files.py` (attachment downloads). The
+scraper runs every 2 hours, via launchd on a Mac (`deploy/*.plist`) or the compose
+`scraper` service (deployed on Coolify). The API and the files worker stay up.
 
 ## Commands
 
@@ -18,6 +19,7 @@ separate schedules. They share only `lifeapi/models.py` (pydantic models) and
 .venv/bin/python -m lifeapi.scraper --only vhl           # one source (use this to test a change)
 .venv/bin/python -m lifeapi.scraper --headed -v          # visible browser, debug logging
 .venv/bin/python -m lifeapi.api --port 8000              # API; OpenAPI docs at /docs
+.venv/bin/python -m lifeapi.scraper.files_worker --once  # download queued attachment files
 .venv/bin/python frontend/serve.py --port 8080 --api http://127.0.0.1:8000   # explorer UI
 sqlite3 data/lifeapi.db "select kind, status, count(*) from items where source='vhl' group by 1,2"
 ```
@@ -28,9 +30,11 @@ There's no test suite or linter. To verify a change, run the affected source wit
 Classroom to re-read every detail page, clear the cache marker:
 `update items set data=json_remove(data,'$.extra.detail_fetched_at') where source='google_classroom'`.
 
-Only one scraper process can use the browser profile (`data/browser-profile/`) at a time.
-A second one, including ad-hoc exploration scripts, fails or hangs on Chrome's profile
-lock. Wait for any running scrape to finish first.
+Only one process can use the browser profile (`data/browser-profile/`) at a time.
+`browser_context()` takes an flock on `browser-profile.lock` first, so the scraper, the
+files worker, `login.sh` and ad-hoc scripts that use it wait for each other. Anything that
+launches Chrome on the profile without `browser_context()` fails or hangs on Chrome's own
+profile lock.
 
 ## Credentials
 
@@ -107,9 +111,29 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   `-wal`/`-shm` files after the scraper exits. They also use `check_same_thread=False`,
   because FastAPI opens the per-request connection (the `db()` dependency) and uses it on
   different threadpool threads.
-- `api/app.py`: FastAPI, read-only. The optional `LIFEAPI_API_TOKEN` bearer auth applies
+- `api/app.py`: FastAPI. The optional `LIFEAPI_API_TOKEN` bearer auth applies
   to everything except `/health`. Every list endpoint hides inactive rows unless
-  `include_inactive=true`.
+  `include_inactive=true`. Scraped data is read-only. Only the attachment-file endpoints
+  write (the `files` table), through `db_rw()`. Writable connections also use
+  `check_same_thread=False`, and a 30s busy timeout, because the scraper, the files
+  worker and the API all write.
+
+### Attachment files
+
+- `lifeapi/files.py` classifies attachment URLs by URL, not by Classroom's `type` label,
+  which is a display string and sometimes junk. It also holds the format → export URL
+  table and the `files` table helpers. Keys are `<google_id>.<format>`.
+- `scraper/files_worker.py` polls for `pending` rows. It opens the browser only while
+  there's work, and downloads by navigating a page and catching the `download` event.
+  `authuser` is the account email, not an index. Files go through `FILES_DIR/.tmp`, then
+  `make_room()` evicts least recently used ready files to stay under
+  `LIFEAPI_ATTACHMENT_STORAGE_GB`.
+- Chrome 154 headless crashes (SIGSEGV) on a session's first download when its History
+  DB lists finished downloads whose files are gone. Playwright deletes its download temp
+  dir on close, so after one downloading session every later one crashed.
+  `browser._clear_download_history()` empties those tables before each launch. Keep it.
+- `frontend/serve.py` proxies POST/DELETE and streams responses (files can be large), so
+  downloads work through the public explorer. The API itself isn't exposed on Coolify.
 
 ### Frontend (`frontend/`)
 

@@ -2,9 +2,9 @@
 # `podman compose up -d --build`, which also merges docker-compose.override.yaml (host
 # ports). No host ports here: on Coolify the proxy routes the domain to `frontend:8080`.
 #
-# All three services share the `data` volume: the SQLite DB, the logged-in browser
-# profile and debug snapshots. Values below come from Coolify's environment variables, or
-# locally from `.env` next to this file.
+# All services share the `data` volume: the SQLite DB, the logged-in browser profile,
+# downloaded attachment files and debug snapshots. Values below come from Coolify's
+# environment variables, or locally from `.env` next to this file.
 
 services:
   api:
@@ -12,6 +12,7 @@ services:
     command: ["python", "-m", "lifeapi.api", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       LIFEAPI_API_TOKEN: ${LIFEAPI_API_TOKEN:?set LIFEAPI_API_TOKEN, the API's bearer token}
+      LIFEAPI_ATTACHMENT_STORAGE_GB: ${LIFEAPI_ATTACHMENT_STORAGE_GB:-2}
     volumes:
       - data:/data
     expose:
@@ -64,6 +65,31 @@ services:
     healthcheck:
       test: ["CMD", "/app/deploy/container/healthcheck.sh"]
       interval: 5m
+      timeout: 10s
+      retries: 2
+      start_period: 30s
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # Downloads attachment files requested through the API (Drive files, Docs/Slides/Sheets
+  # exports) with the scraper's signed-in browser profile. It takes turns with the scraper
+  # for the profile, so a request made during a scrape waits for it to finish.
+  files:
+    build: .
+    command: ["python", "-m", "lifeapi.scraper.files_worker"]
+    environment:
+      GOOGLE_USERNAME: ${GOOGLE_USERNAME:?}
+      GOOGLE_PASSWORD: ${GOOGLE_PASSWORD:?}
+      # Total size of downloaded files; least recently used ones are evicted past it.
+      LIFEAPI_ATTACHMENT_STORAGE_GB: ${LIFEAPI_ATTACHMENT_STORAGE_GB:-2}
+    volumes:
+      - data:/data
+    shm_size: 1gb
+    # The heartbeat stops while it waits for a scrape (up to LIFEAPI_SCRAPE_MAX_RUN) or
+    # runs a long download (up to 30 min), so allow 90 minutes.
+    healthcheck:
+      test: ["CMD", "/app/deploy/container/healthcheck.sh", "/tmp/files-worker.heartbeat", "5400"]
+      interval: 1m
       timeout: 10s
       retries: 2
       start_period: 30s

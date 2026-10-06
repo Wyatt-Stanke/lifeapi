@@ -1,14 +1,17 @@
 # lifeapi
 
-Collects schoolwork from every platform into one SQLite database and serves it as a
-read-only HTTP API.
+Collects schoolwork from every platform into one SQLite database and serves it as an HTTP
+API.
 
-The project has two halves that run separately:
+The project has three parts that run separately:
 
 - **Scraper** (`python -m lifeapi.scraper`): a stealth headless Chrome
   ([patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python)) signs in to each
   platform and writes to `data/lifeapi.db`. Run it on a schedule (every 2 hours).
-- **API** (`python -m lifeapi.api`): FastAPI, read-only over the same database. Leave it
+- **API** (`python -m lifeapi.api`): FastAPI over the same database. Leave it running. It
+  only reads scraped data. Its one write is queueing attachment downloads.
+- **Files worker** (`python -m lifeapi.scraper.files_worker`): downloads the attachment
+  files requested through the API (see [Attachment files](#attachment-files)). Leave it
   running.
 
 | Source | Key | Login | What's collected |
@@ -81,34 +84,43 @@ launchctl load ~/Library/LaunchAgents/com.lifeapi.api.plist       # always on, :
 ```
 
 The plists contain absolute paths to this checkout. Logs go to `data/scraper.log` and
-`data/api.log`. Only one scraper can use the browser profile at a time, so don't start a
-manual run while the scheduled one is running. On Linux, the cron equivalent is
+`data/api.log`. Only one process can use the browser profile at a time. A manual run
+started during the scheduled one waits for it to finish. To serve attachment downloads,
+keep `python -m lifeapi.scraper.files_worker` running too. On Linux, the cron equivalent is
 `0 */2 * * * cd /path/to/lifeapi && .venv/bin/python -m lifeapi.scraper`.
 
 ## Containers (Coolify, podman)
 
-`docker-compose.yaml` runs three services from one image (`Dockerfile`):
+`docker-compose.yaml` runs four services from one image (`Dockerfile`):
 
 | Service | What it runs |
 |---|---|
 | `api` | The API on port 8000, inside the stack's network only. |
 | `frontend` | The explorer on port 8080. It proxies `/api/*` to `api`, so it's the only service that needs a public domain. The API docs are at `/api/docs`. |
 | `scraper` | A scrape at startup, then one every `LIFEAPI_SCRAPE_INTERVAL` seconds (default 7200). |
+| `files` | Downloads the attachment files requested through the API (see [Attachment files](#attachment-files)). |
 
-They share the `data` volume, which holds the DB, the browser profile and debug snapshots.
-On amd64 the image installs Google Chrome. On arm64 (podman on Apple Silicon) it installs
-patchright's Chromium instead, because Chrome isn't published for Linux arm64.
+They share the `data` volume, which holds the DB, the browser profile, downloaded files and
+debug snapshots. On amd64 the image installs Google Chrome. On arm64 (podman on Apple
+Silicon) it installs patchright's Chromium instead, because Chrome isn't published for
+Linux arm64.
 
 Environment variables: `GOOGLE_USERNAME`, `GOOGLE_PASSWORD`, `COLLEGEBOARD_USERNAME`,
 `COLLEGEBOARD_PASSWORD` and `LIFEAPI_API_TOKEN` are required. Compose refuses to start
-without them. `LIFEAPI_SCRAPE_INTERVAL`, `LIFEAPI_SCRAPE_MAX_RUN`, `CLEVER_PORTAL_URL` and
-`INFINITE_CAMPUS_URL` are optional.
+without them. The API token is required because the deployment is public. Enter it in the
+explorer's "API token" field. Optional:
+
+| Variable | Default | |
+|---|---|---|
+| `LIFEAPI_ATTACHMENT_STORAGE_GB` | `2` | Total size of downloaded attachment files. Past it, the least recently used files are evicted. |
+| `LIFEAPI_SCRAPE_INTERVAL` | `7200` | Seconds between scrapes. |
+| `LIFEAPI_SCRAPE_MAX_RUN` | `3600` | A scrape running longer than this marks `scraper` unhealthy. |
+| `CLEVER_PORTAL_URL`, `INFINITE_CAMPUS_URL` | Jersey City | District-specific URLs. |
 
 Every service has a healthcheck. `api` and `frontend` are checked over HTTP, and
 `frontend` waits for `api` to be healthy. `scraper` turns unhealthy only when a run hangs
-past `LIFEAPI_SCRAPE_MAX_RUN` seconds (default 3600). A source that fails doesn't count;
-those failures show up in `/sources`. The API token is required because the deployment is public. Enter it in the
-explorer's "API token" field.
+past `LIFEAPI_SCRAPE_MAX_RUN`. A source that fails doesn't count; those failures show up
+in `/sources`. `files` turns unhealthy when its polling loop has stalled for 90 minutes.
 
 **Locally with podman:**
 
@@ -203,6 +215,50 @@ For Google Classroom, `attachments` holds only what the teacher attached. Your o
 `partial_late`. Times are ISO 8601. Google Classroom only shows dates like "Sep 16", so
 when there's no time of day, the year is inferred and the time is set to 23:59 for due
 dates and 00:00 for posted dates.
+
+### Attachment files
+
+Google Drive, Docs, Slides and Sheets attachments can be downloaded on request. The API
+queues the request. The files worker (`python -m lifeapi.scraper.files_worker`, the `files`
+service in compose) downloads it through the scraper's signed-in browser, so files shared
+only with the student's account work. The explorer's item page has buttons for this under
+"Download attachments".
+
+| Endpoint | |
+|---|---|
+| `GET /items/{source}/{id}/attachments` | The item's attachments, submitted work and description links. Downloadable ones have a `google_id`, the `formats` they can be requested in, and `files`: the requests made so far, by format. |
+| `POST /items/{source}/{id}/attachments/{google_id}/files?format=pdf` | Requests a file. Returns the file record: `202` while it's `pending` or `downloading`, `200` once it's `ready`. Add `refresh=true` to download a ready file again (e.g. after the Doc was edited). Requesting a `failed` or `evicted` file queues it again. |
+| `GET /files/{key}` | One file record. Poll it until `status` is `ready` or `failed`. `error` says why a download failed. |
+| `GET /files/{key}/content` | The file, with its filename in `Content-Disposition`. `409` if it isn't ready. |
+| `GET /files` | Every file record, and `usage` (`used_bytes`, `limit_bytes`). Filter: `status`. |
+| `DELETE /files/{key}` | Deletes the file and its record. |
+
+| Attachment | Formats |
+|---|---|
+| Google Docs | `pdf`, `txt`, `md`, `docx` |
+| Google Slides | `pdf`, `txt`, `pptx` |
+| Google Sheets | `xlsx`, `csv` (first sheet only), `pdf` |
+| Drive file (PDF, image, Word, …) | `original` |
+
+These are the editors' own File > Download exports, as Google produces them. Docs `txt`
+starts with a byte order mark and uses CRLF line endings. Docs with tabs export every
+tab, each under a "Tab 1"-style heading. A Drive link that turns out to be a Docs editors
+file is exported as docx, pptx or xlsx, as Drive's Download button does.
+
+Files are keyed by Google file ID and format (`<google_id>.<format>`), so a Doc attached to
+several items is stored once. A file is a snapshot from when it was downloaded
+(`finished_at`). It doesn't follow later edits until it's requested with `refresh=true`.
+Storage is capped by `LIFEAPI_ATTACHMENT_STORAGE_GB` (default 2, in decimal GB). To make
+room, the least recently downloaded or read files are evicted (status `evicted`). A single
+file larger than the whole cap fails.
+
+The worker and the scraper take turns with the browser profile. A request made during a
+scrape waits until the scrape finishes, which can be several minutes for Google Classroom.
+
+Not downloadable: Drive folders, Google Forms, YouTube videos and ordinary links. Files
+that were deleted or aren't shared with the account fail with "No access". Files whose
+owner turned off downloading for viewers fail too, with the page Google showed saved to
+`data/debug/`.
 
 ## Adding a platform
 

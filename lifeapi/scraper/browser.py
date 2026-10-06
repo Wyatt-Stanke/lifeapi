@@ -7,9 +7,12 @@ keeps the number of fresh logins — and the chance of security challenges — l
 
 from __future__ import annotations
 
+import asyncio
+import fcntl
 import logging
 import re
-from contextlib import asynccontextmanager
+import sqlite3
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -21,12 +24,48 @@ log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
+async def _profile_lock(profile_dir: Path) -> AsyncIterator[None]:
+    """Only one process may use the profile at a time (the scraper, the files worker, a
+    login session). Others wait here instead of failing on Chrome's own profile lock."""
+    with open(profile_dir.with_name(profile_dir.name + ".lock"), "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log.info("Browser profile in use by another process; waiting for it")
+            await asyncio.to_thread(fcntl.flock, f, fcntl.LOCK_EX)
+        # Chrome's Singleton* files name the host that last held the profile. A recreated
+        # container has a new hostname, and Chrome then refuses the profile as "in use on
+        # another computer". We hold the lock, so they're stale.
+        for p in profile_dir.glob("Singleton*"):
+            p.unlink(missing_ok=True)
+        _clear_download_history(profile_dir)
+        yield
+
+
+def _clear_download_history(profile_dir: Path) -> None:
+    """Chrome (154, headless) crashes on a session's first download when its history lists
+    finished downloads whose files are gone. Here they always are: Playwright saves
+    downloads to a temp dir it deletes on close. So after one session that downloaded a
+    file (the files worker), every later download crashed the browser. Nothing uses the
+    download history, so it's emptied while Chrome isn't running."""
+    history = profile_dir / "Default" / "History"
+    if not history.exists():
+        return
+    try:
+        with closing(sqlite3.connect(history, timeout=5)) as conn, conn:
+            for table in ("downloads", "downloads_url_chains", "downloads_slices"):
+                conn.execute(f"DELETE FROM {table}")
+    except sqlite3.Error as e:
+        log.warning("Could not clear Chrome's download history: %s", e)
+
+
+@asynccontextmanager
 async def browser_context(
     headless: bool | None = None, profile_dir: Path | None = None
 ) -> AsyncIterator[BrowserContext]:
     profile_dir = profile_dir or config.BROWSER_PROFILE_DIR
     profile_dir.mkdir(parents=True, exist_ok=True)
-    async with async_playwright() as pw:
+    async with _profile_lock(profile_dir), async_playwright() as pw:
         # patchright's recommended stealth setup: real Chrome, persistent profile,
         # no custom viewport/user agent (those are fingerprintable).
         ctx = await pw.chromium.launch_persistent_context(

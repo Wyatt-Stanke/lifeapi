@@ -14,6 +14,10 @@ DATA_DIR = Path(os.getenv("LIFEAPI_DATA_DIR", PROJECT_ROOT / "data"))
 DB_PATH = Path(os.getenv("LIFEAPI_DB_PATH", DATA_DIR / "lifeapi.db"))
 BROWSER_PROFILE_DIR = Path(os.getenv("LIFEAPI_BROWSER_PROFILE", DATA_DIR / "browser-profile"))
 DEBUG_DIR = Path(os.getenv("LIFEAPI_DEBUG_DIR", DATA_DIR / "debug"))
+# Attachments downloaded on request (lifeapi/files.py). Least recently used files are
+# evicted to stay under the limit.
+FILES_DIR = Path(os.getenv("LIFEAPI_FILES_DIR", DATA_DIR / "files"))
+ATTACHMENT_STORAGE_BYTES = int(float(os.getenv("LIFEAPI_ATTACHMENT_STORAGE_GB", "2")) * 10**9)
 
 # "chrome" uses the locally installed Google Chrome (best stealth); "" falls back to
 # patchright's bundled Chromium.
