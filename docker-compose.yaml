@@ -32,7 +32,8 @@ services:
     expose:
       - "8080"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=5)"]
       interval: 30s
@@ -52,12 +53,20 @@ services:
       COLLEGEBOARD_USERNAME: ${COLLEGEBOARD_USERNAME:?}
       COLLEGEBOARD_PASSWORD: ${COLLEGEBOARD_PASSWORD:?}
       LIFEAPI_SCRAPE_INTERVAL: ${LIFEAPI_SCRAPE_INTERVAL:-7200}
+      LIFEAPI_SCRAPE_MAX_RUN: ${LIFEAPI_SCRAPE_MAX_RUN:-3600}
       CLEVER_PORTAL_URL: ${CLEVER_PORTAL_URL:-https://clever.com/in/jerseycity/}
       INFINITE_CAMPUS_URL: ${INFINITE_CAMPUS_URL:-https://jerseycitynj.infinitecampus.org/campus/portal/students/jerseycity.jsp}
     volumes:
       - data:/data
     # Chrome uses /dev/shm heavily; the 64 MB container default crashes tabs.
     shm_size: 1gb
+    # Unhealthy only when a run hangs (see deploy/container/healthcheck.sh).
+    healthcheck:
+      test: ["CMD", "/app/deploy/container/healthcheck.sh"]
+      interval: 5m
+      timeout: 10s
+      retries: 2
+      start_period: 30s
     stop_grace_period: 30s
     restart: unless-stopped
 

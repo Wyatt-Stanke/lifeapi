@@ -101,8 +101,13 @@ patchright's Chromium instead, because Chrome isn't published for Linux arm64.
 
 Environment variables: `GOOGLE_USERNAME`, `GOOGLE_PASSWORD`, `COLLEGEBOARD_USERNAME`,
 `COLLEGEBOARD_PASSWORD` and `LIFEAPI_API_TOKEN` are required. Compose refuses to start
-without them. `LIFEAPI_SCRAPE_INTERVAL`, `CLEVER_PORTAL_URL` and `INFINITE_CAMPUS_URL` are
-optional. The API token is required because the deployment is public. Enter it in the
+without them. `LIFEAPI_SCRAPE_INTERVAL`, `LIFEAPI_SCRAPE_MAX_RUN`, `CLEVER_PORTAL_URL` and
+`INFINITE_CAMPUS_URL` are optional.
+
+Every service has a healthcheck. `api` and `frontend` are checked over HTTP, and
+`frontend` waits for `api` to be healthy. `scraper` turns unhealthy only when a run hangs
+past `LIFEAPI_SCRAPE_MAX_RUN` seconds (default 3600). A source that fails doesn't count;
+those failures show up in `/sources`. The API token is required because the deployment is public. Enter it in the
 explorer's "API token" field.
 
 **Locally with podman:**
