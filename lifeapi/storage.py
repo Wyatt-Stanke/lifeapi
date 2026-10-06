@@ -69,6 +69,17 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
     items INTEGER,
     grades INTEGER
 );
+-- Manual sync requests from the API. `sources` is a JSON list, or NULL for every enabled
+-- source. The scraper sets started_at when a run picks one up, then finished_at and ok.
+CREATE TABLE IF NOT EXISTS sync_requests (
+    request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sources TEXT,
+    requested_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    ok INTEGER,
+    error TEXT
+);
 """
 
 
@@ -188,6 +199,71 @@ def save_result(conn: sqlite3.Connection, source: str, result: ScrapeResult) -> 
     conn.commit()
 
 
+def request_sync(conn: sqlite3.Connection, sources: list[str] | None) -> tuple[int, bool]:
+    """Queue a sync of `sources` (None: every enabled source). Returns (request_id, created).
+    A request already waiting that covers the same sources is returned instead of a new one."""
+    for r in conn.execute("SELECT request_id, sources FROM sync_requests WHERE started_at IS NULL"):
+        if r["sources"] is None or (sources is not None and set(sources) <= set(json.loads(r["sources"]))):
+            return r["request_id"], False
+    cur = conn.execute(
+        "INSERT INTO sync_requests (sources, requested_at) VALUES (?, ?)",
+        (None if sources is None else json.dumps(sorted(set(sources))), now_iso()),
+    )
+    conn.commit()
+    return cur.lastrowid, True
+
+
+def pending_sync_requests(conn: sqlite3.Connection) -> dict[int, list[str] | None]:
+    """Requests no run has picked up yet: request_id -> sources (None: every enabled one)."""
+    rows = conn.execute(
+        "SELECT request_id, sources FROM sync_requests WHERE started_at IS NULL ORDER BY request_id"
+    )
+    return {r["request_id"]: None if r["sources"] is None else json.loads(r["sources"]) for r in rows}
+
+
+def start_sync_requests(conn: sqlite3.Connection, request_ids: list[int]) -> None:
+    conn.executemany(
+        "UPDATE sync_requests SET started_at=? WHERE request_id=?",
+        [(now_iso(), i) for i in request_ids],
+    )
+    conn.commit()
+
+
+def finish_sync_request(conn: sqlite3.Connection, request_id: int, error: str | None = None) -> None:
+    conn.execute(
+        "UPDATE sync_requests SET finished_at=?, ok=?, error=? WHERE request_id=?",
+        (now_iso(), int(error is None), error, request_id),
+    )
+    conn.commit()
+
+
+def abandon_sync_requests(conn: sqlite3.Connection) -> None:
+    """Fail requests a run started but never finished. Only call this while holding the run
+    lock: then no other run is in progress, so that run must have died."""
+    conn.execute(
+        "UPDATE sync_requests SET finished_at=?, ok=0, error='Interrupted: the scraper stopped mid-run' "
+        "WHERE started_at IS NOT NULL AND finished_at IS NULL",
+        (now_iso(),),
+    )
+    conn.commit()
+
+
+def sync_request_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    if row["finished_at"]:
+        status = "done" if row["ok"] else "failed"
+    else:
+        status = "running" if row["started_at"] else "pending"
+    return {
+        "request_id": row["request_id"],
+        "sources": None if row["sources"] is None else json.loads(row["sources"]),
+        "status": status,
+        "requested_at": row["requested_at"],
+        "started_at": row["started_at"],
+        "finished_at": row["finished_at"],
+        "error": row["error"],
+    }
+
+
 def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     data = json.loads(row["data"])
     data["active"] = bool(row["active"])
@@ -198,5 +274,7 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 __all__ = [
     "Course", "Grade", "Item", "ScrapeResult", "connect", "init_db", "start_run",
-    "finish_run", "save_result", "row_to_dict", "now_iso",
+    "finish_run", "save_result", "row_to_dict", "now_iso", "request_sync",
+    "pending_sync_requests", "start_sync_requests", "finish_sync_request",
+    "abandon_sync_requests", "sync_request_to_dict",
 ]

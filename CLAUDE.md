@@ -8,7 +8,8 @@ lifeapi collects a student's schoolwork from several platforms into one SQLite d
 and serves it as a read-only HTTP API. The scraper and the API are separate processes on
 separate schedules. They share only `lifeapi/models.py` (pydantic models) and
 `lifeapi/storage.py` (SQLite access). The scraper runs every 2 hours via launchd
-(`deploy/`). The API stays up.
+(`deploy/`). The API stays up. The API's only write is queueing manual sync requests
+(`POST /sync`), which the scraper picks up (see "Manual sync" below).
 
 ## Commands
 
@@ -29,8 +30,9 @@ Classroom to re-read every detail page, clear the cache marker:
 `update items set data=json_remove(data,'$.extra.detail_fetched_at') where source='google_classroom'`.
 
 Only one scraper process can use the browser profile (`data/browser-profile/`) at a time.
-A second one, including ad-hoc exploration scripts, fails or hangs on Chrome's profile
-lock. Wait for any running scrape to finish first.
+`runner.run()` holds `data/run.lock` (flock) for the whole run, so a second scraper run
+waits for the first. Ad-hoc exploration scripts don't take that lock, and fail or hang on
+Chrome's profile lock. Wait for any running scrape to finish first.
 
 ## Credentials
 
@@ -107,15 +109,35 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   `-wal`/`-shm` files after the scraper exits. They also use `check_same_thread=False`,
   because FastAPI opens the per-request connection (the `db()` dependency) and uses it on
   different threadpool threads.
-- `api/app.py`: FastAPI, read-only. The optional `LIFEAPI_API_TOKEN` bearer auth applies
-  to everything except `/health`. Every list endpoint hides inactive rows unless
-  `include_inactive=true`.
+- `api/app.py`: FastAPI, read-only apart from `/sync`. The optional `LIFEAPI_API_TOKEN`
+  bearer auth applies to everything except `/health`. Every list endpoint hides inactive
+  rows unless `include_inactive=true`. The API imports the scraper's `REGISTRY` (to
+  validate sync requests and list never-run sources in `/sources`), but never opens a
+  browser.
+
+### Manual sync
+
+The API can't scrape itself: in containers it runs in a different service without the
+credentials. So `POST /sync` inserts a `sync_requests` row (`sources` JSON list, NULL for
+every enabled source) and touches `config.SYNC_TRIGGER` (`data/sync-requested`). A waiting
+request that already covers the sources is returned instead of a duplicate.
+
+- Every `runner.run()`, under the run lock: fails requests left `running` by a run that
+  died, deletes the trigger, then claims each pending request whose sources it covers. If
+  any stay pending, it re-touches the trigger. Deleting before reading means a request
+  queued mid-run is never missed.
+- `--requested` runs the union of pending requests' sources, and returns before opening
+  the browser if there are none.
+- Wakeups: launchd's `com.lifeapi.sync` job `WatchPaths` the trigger. The container's
+  `scrape-loop.sh` polls it every `LIFEAPI_SYNC_POLL` seconds between scheduled runs.
+  Python's `run.lock` is separate from `scrape.sh`'s `scrape.lock`, because the Python
+  process inherits the shell's flocked fd, and taking the same file again would deadlock.
 
 ### Frontend (`frontend/`)
 
 A temporary, deliberately unstyled explorer: plain semantic HTML, no CSS, no build step.
 It's a user-facing wrapper (Today, Upcoming, Missing, Announcements, Courses, Grades,
-Search, Sync status), not an endpoint browser. Raw API access stays at `/api/docs`.
+Search, Sync status with sync buttons), not an endpoint browser. Raw API access stays at `/api/docs`.
 
 - `serve.py` is stdlib only. It proxies `/api/*` (and `/openapi.json`, which FastAPI's
   docs page fetches from the root) to the API, so the API needs no CORS. Every other path

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Runs manual sync requests (POST /sync): the API touches data/sync-requested, and launchd
+     starts the scraper in --requested mode. Install: see README "Scheduling". -->
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.lifeapi.sync</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/wyattstanke/Documents/projects/lifeapi/.venv/bin/python</string>
+        <string>-m</string>
+        <string>lifeapi.scraper</string>
+        <string>--requested</string>
+    </array>
+    <key>WorkingDirectory</key><string>/Users/wyattstanke/Documents/projects/lifeapi</string>
+    <key>WatchPaths</key>
+    <array>
+        <string>/Users/wyattstanke/Documents/projects/lifeapi/data/sync-requested</string>
+    </array>
+    <key>StandardOutPath</key><string>/Users/wyattstanke/Documents/projects/lifeapi/data/scraper.log</string>
+    <key>StandardErrorPath</key><string>/Users/wyattstanke/Documents/projects/lifeapi/data/scraper.log</string>
+</dict>
+</plist>

@@ -4,6 +4,7 @@
     python -m lifeapi.scraper --only infinite_campus
     python -m lifeapi.scraper --headed             # watch it / finish a login by hand
     python -m lifeapi.scraper --list
+    python -m lifeapi.scraper --requested          # just what's waiting in POST /sync requests
 """
 
 from __future__ import annotations
@@ -23,6 +24,9 @@ def main() -> None:
     parser.add_argument("--only", nargs="+", metavar="SOURCE", help="run just these sources")
     parser.add_argument("--headed", action="store_true", help="show the browser window")
     parser.add_argument("--list", action="store_true", help="list available sources")
+    parser.add_argument("--requested", action="store_true",
+                        help="run only sources with waiting sync requests (POST /sync); "
+                             "exits without opening the browser if there are none")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -36,7 +40,8 @@ def main() -> None:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
     logging.getLogger("asyncio").setLevel(logging.WARNING)
-    ok = asyncio.run(run(only=args.only, headless=False if args.headed else None))
+    ok = asyncio.run(run(only=args.only, headless=False if args.headed else None,
+                         requested=args.requested))
     sys.exit(0 if ok else 1)
 
 

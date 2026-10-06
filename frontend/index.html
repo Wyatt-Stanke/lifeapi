@@ -51,7 +51,7 @@ tokenInput.addEventListener("change", () => {
   route();
 });
 
-async function api(path, params = {}) {
+async function api(path, params = {}, { method = "GET" } = {}) {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v == null || v === "" || v === false) continue;
@@ -59,7 +59,7 @@ async function api(path, params = {}) {
   }
   const url = API + path + (qs.toString() ? "?" + qs : "");
   const headers = tokenInput.value ? { Authorization: `Bearer ${tokenInput.value}` } : {};
-  const res = await fetch(url, { headers });
+  const res = await fetch(url, { method, headers });
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(`${res.status}: ${body?.detail ?? res.statusText} (${url})`);
   return body;
@@ -383,21 +383,59 @@ async function viewSearch(params) {
   ];
 }
 
+const failure = (error) => h("span", {}, h("strong", {}, "Failed"), error ? h("details", {}, h("summary", {}, "error"), h("pre", {}, error)) : null);
+
+// Fills in and re-renders its own box (every 5 s while a sync is queued or running) rather
+// than going through route(), so there's no "Loading…" flash.
 async function viewStatus() {
-  const sources = await api("/sources");
-  return [
-    h("h1", {}, "Sync status"),
-    h("table", { border: 1, cellpadding: 4 },
-      h("tr", {}, ["Source", "Last run", "Result", "Courses", "Items", "Grades", "Last success"].map((x) => h("th", {}, x))),
-      sources.map((s) => {
-        const r = s.last_run;
-        const result = r.ok == null ? (r.finished_at ? "?" : "running…") : r.ok ? "OK" : h("span", {}, h("strong", {}, "Failed"), r.error ? h("details", {}, h("summary", {}, "error"), h("pre", {}, r.error)) : null);
-        return h("tr", {},
-          h("td", {}, sourceName(s.source)), h("td", {}, when(r.started_at)), h("td", {}, result),
-          h("td", {}, r.counts.courses ?? ""), h("td", {}, r.counts.items ?? ""), h("td", {}, r.counts.grades ?? ""),
-          h("td", {}, s.last_success_at ? when(s.last_success_at) : "never"));
-      })),
-  ];
+  const box = h("div");
+  let timer;
+
+  async function sync(sources) {
+    try { await api("/sync", { source: sources }, { method: "POST" }); }
+    catch (e) { alert(`Couldn't request a sync: ${e.message}`); }
+    render();
+  }
+
+  async function render() {
+    clearTimeout(timer);
+    const [sources, requests] = await Promise.all([api("/sources"), api("/sync", { limit: 10 })]);
+    const active = requests.filter((r) => r.status === "pending" || r.status === "running");
+    const enabled = sources.filter((s) => s.enabled).map((s) => s.source);
+    const activeFor = (name) => active.find((r) => (r.sources ?? enabled).includes(name))?.status;
+    box.replaceChildren(
+      h("p", {}, h("button", { onclick: () => sync(), disabled: active.some((r) => !r.sources) }, "Sync all now")),
+      h("table", { border: 1, cellpadding: 4 },
+        h("tr", {}, ["Source", "Last run", "Result", "Courses", "Items", "Grades", "Last success", ""].map((x) => h("th", {}, x))),
+        sources.map((s) => {
+          const r = s.last_run;
+          const result = !r ? "never run" : r.ok == null ? (r.finished_at ? "?" : "running…") : r.ok ? "OK" : failure(r.error);
+          const state = activeFor(s.source);
+          return h("tr", {},
+            h("td", {}, sourceName(s.source), s.enabled ? null : h("small", {}, " (disabled)")),
+            h("td", {}, r ? when(r.started_at) : ""), h("td", {}, result),
+            h("td", {}, r?.counts.courses ?? ""), h("td", {}, r?.counts.items ?? ""), h("td", {}, r?.counts.grades ?? ""),
+            h("td", {}, s.last_success_at ? when(s.last_success_at) : "never"),
+            h("td", {}, state === "running" ? "Syncing…" : state === "pending" ? "Queued"
+              : h("button", { onclick: () => sync(s.source) }, "Sync")));
+        })),
+      h("h2", {}, "Sync requests"),
+      requests.length ? h("table", { border: 1, cellpadding: 4 },
+        h("tr", {}, ["Requested", "Sources", "Status", "Finished"].map((x) => h("th", {}, x))),
+        requests.map((r) => h("tr", {},
+          h("td", {}, when(r.requested_at)),
+          h("td", {}, r.sources ? r.sources.map(sourceName).join(", ") : "All sources"),
+          h("td", {}, r.status === "failed" ? failure(r.error) : r.status === "running" ? "Running…" : label(r.status)),
+          h("td", {}, when(r.finished_at)))))
+        : h("p", {}, h("em", {}, "None yet.")),
+      active.length ? h("p", {}, h("small", {}, "Refreshing while a sync is queued or running.")) : null,
+    );
+    // Stop once the page has been navigated away from.
+    if (active.length) timer = setTimeout(() => box.isConnected && render().catch(() => {}), 5000);
+  }
+
+  await render(); // errors on the first load go to route()'s "Couldn't load"
+  return [h("h1", {}, "Sync status"), box];
 }
 
 // ---------- link resolver: <this site>/<any source URL> → the matching page ----------
