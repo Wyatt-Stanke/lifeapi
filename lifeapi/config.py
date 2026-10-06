@@ -25,6 +25,15 @@ RUN_LOCK = DATA_DIR / "run.lock"
 # patchright's bundled Chromium.
 BROWSER_CHANNEL = os.getenv("LIFEAPI_BROWSER_CHANNEL", "chrome") or None
 HEADLESS = os.getenv("LIFEAPI_HEADLESS", "1") not in ("0", "false", "no")
+# Multiplies every scraper wait deadline (page loads, selectors, logins). Small hosts render
+# slowly, and a probe that gives up early can read as "no items" and soft-delete real data.
+# Fixed settle pauses aren't scaled: those slow down every run, not just the slow ones.
+TIMEOUT_SCALE = float(os.getenv("LIFEAPI_TIMEOUT_SCALE", "3"))
+
+
+def timeout(ms: int) -> int:
+    """A wait deadline in ms, scaled by LIFEAPI_TIMEOUT_SCALE."""
+    return int(ms * TIMEOUT_SCALE)
 
 # Optional bearer token for the API. If unset, the API is open (bind it to localhost).
 API_TOKEN = os.getenv("LIFEAPI_API_TOKEN") or None

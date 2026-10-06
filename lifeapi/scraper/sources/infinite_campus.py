@@ -14,7 +14,7 @@ from patchright.async_api import Page
 
 from ... import config
 from ...models import Course, Grade, GradeEntry, ScrapeResult
-from ..auth.google import LoginError, google_login, on_google_login
+from ..auth.google import LoginError, google_login, is_google_login_url, on_google_login
 from ..base import Source, register
 from ..browser import dump_debug
 
@@ -52,19 +52,27 @@ class InfiniteCampus(Source):
         if "/nav-wrapper/" in page.url:
             return  # session still valid
         sso = page.locator("#samlLoginLink")
-        await sso.wait_for(timeout=20_000)
+        await sso.wait_for(timeout=config.timeout(20_000))
         await sso.click()
-        await page.wait_for_timeout(2000)
+        # SSO goes through Google, which either asks us to sign in or redirects straight back.
+        try:
+            await page.wait_for_url(
+                lambda u: is_google_login_url(u) or "/nav-wrapper/" in u, timeout=config.timeout(30_000)
+            )
+        except Exception:
+            pass  # reported by the portal wait below
         if on_google_login(page):
             await google_login(page)
         try:
-            await page.wait_for_url("**/nav-wrapper/**", timeout=60_000)
+            await page.wait_for_url("**/nav-wrapper/**", timeout=config.timeout(60_000))
         except Exception as e:
             await dump_debug(page, "infinite_campus_login")
             raise LoginError(f"Infinite Campus login didn't reach the portal (at {page.url})") from e
 
     async def _get(self, page: Page, path: str) -> Any:
-        r = await page.request.get(self.base + path, headers={"Accept": "application/json"})
+        r = await page.request.get(
+            self.base + path, headers={"Accept": "application/json"}, timeout=config.timeout(30_000)
+        )
         if not r.ok:
             raise RuntimeError(f"GET {path} -> HTTP {r.status}")
         return await r.json()

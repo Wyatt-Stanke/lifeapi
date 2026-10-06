@@ -10,14 +10,16 @@ Nothing is opened or started.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from typing import Any
 
 from patchright.async_api import Page, Response
 
+from ... import config
 from ...models import Course, Item, ItemKind, ScrapeResult
-from ..auth.collegeboard import collegeboard_login, on_collegeboard_login
+from ..auth.collegeboard import collegeboard_login, is_collegeboard_login_url, on_collegeboard_login
 from ..base import Source, register
 from ..browser import dump_debug
 from ..dates import now
@@ -33,6 +35,14 @@ def _dt(s: str | None) -> datetime | None:
         return datetime.fromisoformat(s)
     except ValueError:
         return None
+
+
+async def _wait_event(event: asyncio.Event) -> bool:
+    try:
+        await asyncio.wait_for(event.wait(), config.timeout(30_000) / 1000)
+        return True
+    except asyncio.TimeoutError:
+        return False
 
 
 @register
@@ -57,6 +67,7 @@ class APClassroom(Source):
         # The app asks GraphQL for the user profile (with `studentSubjects`) on load; the
         # operation name varies by page, so match on the payload instead.
         profiles: list[dict] = []
+        got_profile = asyncio.Event()
 
         async def collect(r: Response) -> None:
             if "fym/graphql" in r.url and r.request.method == "POST":
@@ -66,28 +77,23 @@ class APClassroom(Source):
                     return
                 if data.get("studentSubjects") is not None:
                     profiles.append(data)
+                    got_profile.set()
 
         page.on("response", collect)
         try:
             await page.goto(BASE)
             # Either the app loads (session still valid) or we bounce through the CB login.
             await page.wait_for_url(
-                lambda u: "idp.collegeboard.org" in u or "/subjects" in u or "/assignments" in u,
-                timeout=45_000,
+                lambda u: is_collegeboard_login_url(u) or "/subjects" in u or "/assignments" in u,
+                timeout=config.timeout(45_000),
             )
             if on_collegeboard_login(page):
                 await collegeboard_login(page)
-                await page.wait_for_url(lambda u: "apclassroom.collegeboard.org" in u, timeout=45_000)
-            for _ in range(30):
-                if profiles:
-                    break
-                await page.wait_for_timeout(1000)
-            if not profiles:  # loaded from cache before we were listening: reload once
+                await page.wait_for_url(lambda u: "apclassroom.collegeboard.org" in u, timeout=config.timeout(45_000))
+            if not await _wait_event(got_profile):
+                # Loaded from cache before we were listening: reload once.
                 await page.reload()
-                for _ in range(30):
-                    if profiles:
-                        break
-                    await page.wait_for_timeout(1000)
+                await _wait_event(got_profile)
         finally:
             page.remove_listener("response", collect)
         if not profiles:
@@ -113,7 +119,7 @@ class APClassroom(Source):
             try:
                 async with page.expect_response(
                     lambda r: "/student_assignments/" in r.url and f"status={status}" in r.url,
-                    timeout=30_000,
+                    timeout=config.timeout(30_000),
                 ) as resp:
                     await page.goto(f"{BASE}/{course.id}/assignments?status={status}")
                 data = await (await resp.value).json()

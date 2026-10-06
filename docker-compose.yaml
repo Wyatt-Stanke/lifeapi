@@ -58,6 +58,7 @@ services:
       LIFEAPI_SCRAPE_INTERVAL: ${LIFEAPI_SCRAPE_INTERVAL:-7200}
       LIFEAPI_SCRAPE_MAX_RUN: ${LIFEAPI_SCRAPE_MAX_RUN:-3600}
       LIFEAPI_SYNC_POLL: ${LIFEAPI_SYNC_POLL:-10}
+      LIFEAPI_TIMEOUT_SCALE: ${LIFEAPI_TIMEOUT_SCALE:-3}
       CLEVER_PORTAL_URL: ${CLEVER_PORTAL_URL:-https://clever.com/in/jerseycity/}
       INFINITE_CAMPUS_URL: ${INFINITE_CAMPUS_URL:-https://jerseycitynj.infinitecampus.org/campus/portal/students/jerseycity.jsp}
     volumes:

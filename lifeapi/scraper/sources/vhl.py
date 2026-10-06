@@ -13,6 +13,7 @@ from datetime import date, datetime
 
 from patchright.async_api import Page
 
+from ... import config
 from ...models import Course, Item, ItemKind, ScrapeResult
 from ..auth.clever import launch_app
 from ..base import Source, register
@@ -80,7 +81,7 @@ class VistaHigherLearning(Source):
         try:
             app = await launch_app(self.context, page, "Vista Higher Learning")
             await app.goto(HOME)
-            await app.wait_for_selector('a[href*="m3a.vhlcentral.com/courses/"]', timeout=30_000)
+            await app.wait_for_selector('a[href*="m3a.vhlcentral.com/courses/"]', timeout=config.timeout(30_000))
             sections = await app.evaluate(SECTIONS_JS)
             if not sections:
                 await dump_debug(app, "vhl_no_sections")
