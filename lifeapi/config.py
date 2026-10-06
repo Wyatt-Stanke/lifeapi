@@ -27,7 +27,6 @@ BROWSER_CHANNEL = os.getenv("LIFEAPI_BROWSER_CHANNEL", "chrome") or None
 HEADLESS = os.getenv("LIFEAPI_HEADLESS", "1") not in ("0", "false", "no")
 # Multiplies every scraper wait deadline (page loads, selectors, logins). Small hosts render
 # slowly, and a probe that gives up early can read as "no items" and soft-delete real data.
-# Fixed settle pauses aren't scaled: those slow down every run, not just the slow ones.
 TIMEOUT_SCALE = float(os.getenv("LIFEAPI_TIMEOUT_SCALE", "3"))
 
 
