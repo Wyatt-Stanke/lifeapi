@@ -12,6 +12,8 @@ services:
     command: ["python", "-m", "lifeapi.api", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       LIFEAPI_API_TOKEN: ${LIFEAPI_API_TOKEN:?set LIFEAPI_API_TOKEN, the API's bearer token}
+      # The server's SSH destination, shown in /sources' login_command (deploy/reauth.py).
+      LIFEAPI_REAUTH_TARGET: ${LIFEAPI_REAUTH_TARGET:-}
     volumes:
       - data:/data
     expose:
@@ -62,6 +64,8 @@ services:
       - data:/data
     # Chrome uses /dev/shm heavily; the 64 MB container default crashes tabs.
     shm_size: 1gb
+    # Reaps orphaned Chrome processes, e.g. after deploy/reauth.py stops a headed scrape.
+    init: true
     # Unhealthy only when a run hangs (see deploy/container/healthcheck.sh).
     healthcheck:
       test: ["CMD", "/app/deploy/container/healthcheck.sh"]
