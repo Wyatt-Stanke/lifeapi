@@ -45,6 +45,7 @@ Optional settings:
 | `LIFEAPI_HEADLESS` | `1` | `0` shows the browser window. |
 | `LIFEAPI_BROWSER_CHANNEL` | `chrome` | Uses the installed Google Chrome. Set it to empty to use patchright's Chromium instead. |
 | `LIFEAPI_API_TOKEN` | unset | If set, the API requires `Authorization: Bearer <token>`. |
+| `LIFEAPI_REAUTH_TARGET` | unset | The server's SSH destination (e.g. `root@vps`), or `--local`. Fills in the sign-in command that `/sources` shows when a login gets stuck. See [Finishing a sign-in challenge](#finishing-a-sign-in-challenge). |
 | `LIFEAPI_DATA_DIR` | `./data` | Holds the DB, the browser profile and debug snapshots. |
 | `CLEVER_PORTAL_URL`, `INFINITE_CAMPUS_URL` | Jersey City | District-specific URLs. |
 
@@ -117,8 +118,8 @@ patchright's Chromium instead, because Chrome isn't published for Linux arm64.
 
 Environment variables: `GOOGLE_USERNAME`, `GOOGLE_PASSWORD`, `COLLEGEBOARD_USERNAME`,
 `COLLEGEBOARD_PASSWORD` and `LIFEAPI_API_TOKEN` are required. Compose refuses to start
-without them. `LIFEAPI_SCRAPE_INTERVAL`, `LIFEAPI_SCRAPE_MAX_RUN`, `LIFEAPI_SYNC_POLL`, `CLEVER_PORTAL_URL` and
-`INFINITE_CAMPUS_URL` are optional.
+without them. `LIFEAPI_SCRAPE_INTERVAL`, `LIFEAPI_SCRAPE_MAX_RUN`, `LIFEAPI_SYNC_POLL`, `CLEVER_PORTAL_URL`,
+`INFINITE_CAMPUS_URL` and `LIFEAPI_REAUTH_TARGET` are optional.
 
 Every service has a healthcheck. `api` and `frontend` are checked over HTTP, and
 `frontend` waits for `api` to be healthy. `scraper` turns unhealthy only when a run hangs
@@ -134,8 +135,8 @@ podman compose logs -f scraper
 open http://127.0.0.1:8080
 ```
 
-The override publishes the API on `127.0.0.1:8000`, the explorer on `127.0.0.1:8080` and
-VNC on `127.0.0.1:5900`. The container has its own browser profile, separate from
+The override publishes the API on `127.0.0.1:8000` and the explorer on `127.0.0.1:8080`.
+The container has its own browser profile, separate from
 `data/browser-profile/` on the Mac.
 
 **On Coolify:**
@@ -154,26 +155,40 @@ VNC on `127.0.0.1:5900`. The container has its own browser profile, separate fro
 
 A Chrome profile from macOS can't be copied over, because its cookies are encrypted with
 the Mac's Keychain. The server signs in from scratch, from an address Google and College
-Board haven't seen before, and they may ask for extra verification. If `/sources` shows a
-login failure, run a headed scrape that you can watch over VNC:
+Board haven't seen before, and they may ask for extra verification (for Google, a
+`.../signin/confirmidentifier` page). When that happens, the explorer's Sync status page
+shows the fix under the source's error, ready to copy. From a checkout of this repository
+on your own machine:
 
 ```sh
-# In the scraper container (Coolify: the service's Terminal tab; locally:
-# `podman compose exec scraper sh`):
-VNC_PASSWORD=pick-one /app/deploy/container/login.sh --only google_classroom
+python3 deploy/reauth.py root@your-server --only google_classroom
+python3 deploy/reauth.py --local --only google_classroom    # containers on this machine
 ```
 
-It waits for any scheduled run to finish first, then serves the browser on port 5900.
-Locally, connect a VNC client to `127.0.0.1:5900`. On Coolify, tunnel to the container
-from your machine, then connect to `localhost:5900`:
+It finds the scraper container over SSH, starts a headed scrape in it on a virtual display
+(`deploy/container/login.sh`), and opens the browser window in Screen Sharing (on other
+systems it prints a `127.0.0.1` port for any VNC viewer). Finish the sign-in there. The
+scrape then carries on, and the session is saved in the `data` volume for scheduled runs.
+If a scheduled run is going, it waits for it first. Ctrl-C stops the session on the server.
+It needs only Python 3 and SSH access to the server as a user that can run `docker` (pass
+`--docker "sudo docker"` otherwise, and `--container NAME` if it can't find the container).
 
-```sh
-ssh you@server "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' <scraper-container>"
-ssh -L 5900:<that IP>:5900 you@server
-```
+Set `LIFEAPI_REAUTH_TARGET` on the `api` service to your SSH destination so the command on
+the Sync status page is complete. Without it, the page shows `<user@server>`.
 
-Finish the sign-in in the Chrome window. The session is saved in the `data` volume, and
-scheduled runs use it from then on.
+Security:
+
+- VNC listens only on the scraper container's loopback. No port is published on the
+  server or the container network. `reauth.py` pipes each VNC connection through
+  `docker exec` over your SSH login, so reaching the browser takes the same access as
+  running commands on the server.
+- On your machine it listens on `127.0.0.1` only, on a random port.
+- The VNC password is random for each session and is handed to x11vnc in a file that's
+  deleted at once, never on a command line.
+- When `reauth.py` exits or its SSH connection drops, the scrape, display and VNC server
+  stop.
+- The command (with your SSH destination) is part of `/sources`, so it's behind the API
+  token, like the rest of the data.
 
 ## API
 

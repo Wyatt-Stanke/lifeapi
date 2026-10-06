@@ -29,6 +29,11 @@ HEADLESS = os.getenv("LIFEAPI_HEADLESS", "1") not in ("0", "false", "no")
 # Optional bearer token for the API. If unset, the API is open (bind it to localhost).
 API_TOKEN = os.getenv("LIFEAPI_API_TOKEN") or None
 
+# Where `deploy/reauth.py` should connect when a sign-in needs finishing by hand: the
+# server's SSH destination (e.g. "root@vps"), or "--local" for containers on this machine.
+# Only used to show the command in /sources (behind the token), never to connect.
+REAUTH_TARGET = os.getenv("LIFEAPI_REAUTH_TARGET") or None
+
 
 def credential(name: str) -> str:
     value = os.getenv(name)

@@ -4,6 +4,7 @@ which the scraper picks up."""
 
 from __future__ import annotations
 
+import shlex
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
@@ -45,6 +46,15 @@ def _iso(dt: datetime | None) -> str | None:
 Auth = Depends(require_token)
 
 
+def _login_command(source: str, error: str | None) -> str | None:
+    """The command that finishes a stuck sign-in by hand (deploy/reauth.py), for a run that
+    failed on a login challenge. Run it from a checkout of this repository."""
+    if not error or not error.startswith("LoginError:"):
+        return None
+    target = shlex.quote(config.REAUTH_TARGET) if config.REAUTH_TARGET else "<user@server>"
+    return f"python3 deploy/reauth.py {target} --only {shlex.quote(source)}"
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -53,7 +63,9 @@ def health() -> dict[str, str]:
 @app.get("/sources", dependencies=[Auth])
 def sources(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
     """Every registered source with its most recent scrape run (null if it has never run)
-    and its last successful one."""
+    and its last successful one. `login_command` is set when the last run got stuck on a
+    sign-in challenge: run it from a checkout of this repository to finish the sign-in by
+    hand over VNC."""
     rows = {r["source"]: r for r in conn.execute(
         """SELECT r.* FROM scrape_runs r
            JOIN (SELECT source, MAX(run_id) AS run_id FROM scrape_runs GROUP BY source) last
@@ -77,6 +89,7 @@ def sources(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
                 "counts": {"courses": r["courses"], "items": r["items"], "grades": r["grades"]},
             },
             "last_success_at": ok["finished_at"] if ok else None,
+            "login_command": _login_command(name, r and r["error"]),
         })
     return out
 

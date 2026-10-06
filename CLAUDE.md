@@ -115,6 +115,19 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   validate sync requests and list never-run sources in `/sources`), but never opens a
   browser.
 
+### Finishing a sign-in by hand
+
+`deploy/reauth.py` (stdlib only, runs on the user's machine) is the one-command fix for a
+login challenge on the server. It runs `docker exec <scraper> login.sh` over SSH. That
+starts Xvfb, x11vnc on the container's loopback and a headed scrape. It then serves a
+random `127.0.0.1` port locally, and pipes each VNC connection through `docker exec … python -c`
+into the container, so nothing listens on any network. `login.sh` stops everything
+when its stdin closes (`LIFEAPI_LOGIN_STOP_ON_EOF=1`), so Ctrl-C or a dropped SSH
+connection never leaves a headed Chrome holding the profile lock. The container's `sh` is
+dash: its `kill` rejects `--`, so process groups are killed with `kill -TERM "-$PGID"`.
+`/sources` adds `login_command` (built from `LIFEAPI_REAUTH_TARGET`) when the last run
+failed with `LoginError`, and the Sync status page shows it under the error.
+
 ### Manual sync
 
 The API can't scrape itself: in containers it runs in a different service without the

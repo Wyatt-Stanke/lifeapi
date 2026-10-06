@@ -383,7 +383,11 @@ async function viewSearch(params) {
   ];
 }
 
-const failure = (error) => h("span", {}, h("strong", {}, "Failed"), error ? h("details", {}, h("summary", {}, "error"), h("pre", {}, error)) : null);
+// `command` is a source's login_command: shown under the error when a sign-in needs a hand.
+const failure = (error, command) => h("span", {}, h("strong", {}, "Failed"), error ? h("details", {}, h("summary", {}, "error"), h("pre", {}, error),
+  command ? [h("p", {}, "The sign-in needs finishing by hand. From your lifeapi checkout, run this, then sign in in the window that opens:"),
+    h("pre", {}, h("code", {}, command)),
+    h("button", { onclick: (e) => navigator.clipboard.writeText(command).then(() => { e.target.textContent = "Copied"; }) }, "Copy command")] : null) : null);
 
 // Fills in and re-renders its own box (every 5 s while a sync is queued or running) rather
 // than going through route(), so there's no "Loading…" flash.
@@ -409,7 +413,7 @@ async function viewStatus() {
         h("tr", {}, ["Source", "Last run", "Result", "Courses", "Items", "Grades", "Last success", ""].map((x) => h("th", {}, x))),
         sources.map((s) => {
           const r = s.last_run;
-          const result = !r ? "never run" : r.ok == null ? (r.finished_at ? "?" : "running…") : r.ok ? "OK" : failure(r.error);
+          const result = !r ? "never run" : r.ok == null ? (r.finished_at ? "?" : "running…") : r.ok ? "OK" : failure(r.error, s.login_command);
           const state = activeFor(s.source);
           return h("tr", {},
             h("td", {}, sourceName(s.source), s.enabled ? null : h("small", {}, " (disabled)")),

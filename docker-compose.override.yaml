@@ -7,6 +7,3 @@ services:
   frontend:
     ports:
       - "127.0.0.1:8080:8080"
-  scraper:
-    ports:
-      - "127.0.0.1:5900:5900"   # VNC, only while deploy/container/login.sh is running
