@@ -44,6 +44,7 @@ Optional settings:
 |---|---|---|
 | `LIFEAPI_HEADLESS` | `1` | `0` shows the browser window. |
 | `LIFEAPI_BROWSER_CHANNEL` | `chrome` | Uses the installed Google Chrome. Set it to empty to use patchright's Chromium instead. |
+| `LIFEAPI_TIMEOUT_SCALE` | `3` | Multiplies the scraper's wait deadlines (page loads, selectors, logins). Raise it on a slow host. |
 | `LIFEAPI_API_TOKEN` | unset | If set, the API requires `Authorization: Bearer <token>`. |
 | `LIFEAPI_DATA_DIR` | `./data` | Holds the DB, the browser profile and debug snapshots. |
 | `CLEVER_PORTAL_URL`, `INFINITE_CAMPUS_URL` | Jersey City | District-specific URLs. |
@@ -117,7 +118,7 @@ patchright's Chromium instead, because Chrome isn't published for Linux arm64.
 
 Environment variables: `GOOGLE_USERNAME`, `GOOGLE_PASSWORD`, `COLLEGEBOARD_USERNAME`,
 `COLLEGEBOARD_PASSWORD` and `LIFEAPI_API_TOKEN` are required. Compose refuses to start
-without them. `LIFEAPI_SCRAPE_INTERVAL`, `LIFEAPI_SCRAPE_MAX_RUN`, `LIFEAPI_SYNC_POLL`, `CLEVER_PORTAL_URL` and
+without them. `LIFEAPI_SCRAPE_INTERVAL`, `LIFEAPI_SCRAPE_MAX_RUN`, `LIFEAPI_SYNC_POLL`, `LIFEAPI_TIMEOUT_SCALE`, `CLEVER_PORTAL_URL` and
 `INFINITE_CAMPUS_URL` are optional.
 
 Every service has a healthcheck. `api` and `frontend` are checked over HTTP, and

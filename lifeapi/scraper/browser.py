@@ -44,7 +44,7 @@ async def browser_context(
                 "--disable-backgrounding-occluded-windows",
             ],
         )
-        ctx.set_default_timeout(30_000)
+        ctx.set_default_timeout(config.timeout(30_000))
         try:
             yield ctx
         finally:

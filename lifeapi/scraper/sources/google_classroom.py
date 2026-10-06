@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 from patchright.async_api import Page
 
+from ... import config
 from ...models import Attachment, Comment, Course, Item, ItemKind, ScrapeResult
 from ..auth.google import google_login, on_google_login
 from ..base import Source, register
@@ -73,7 +74,7 @@ class GoogleClassroom(Source):
         if on_google_login(page):
             await google_login(page)
             await page.goto(url)
-        await page.wait_for_selector(ready, timeout=30_000)
+        await page.wait_for_selector(ready, timeout=config.timeout(30_000))
 
     # -- courses ----------------------------------------------------------------------
 
@@ -101,7 +102,7 @@ class GoogleClassroom(Source):
         await page.goto(f"{BASE}/u/0/w/{cid}/t/all")
         await page.wait_for_load_state("domcontentloaded")
         try:
-            await page.wait_for_selector("li[data-stream-item-id]", timeout=10_000)
+            await page.wait_for_selector("li[data-stream-item-id]", timeout=config.timeout(10_000))
         except Exception:
             self.log.info("%s: no classwork", course.name)
             return []
@@ -188,16 +189,16 @@ class GoogleClassroom(Source):
         if on_google_login(page):
             await google_login(page)
             await page.goto(item.url)
-        await page.wait_for_selector("[data-stream-item-id]", state="attached", timeout=20_000)
+        await page.wait_for_selector("[data-stream-item-id]", state="attached", timeout=config.timeout(20_000))
         # Wait until the header has rendered its "author • date" line and the submission
         # status has finished loading. Question pages redirect (/a/ -> /mc/) and render late.
         try:
-            await page.wait_for_function(DETAIL_READY_JS, timeout=15_000)
+            await page.wait_for_function(DETAIL_READY_JS, timeout=config.timeout(15_000))
         except Exception:
             # Some pages (multiple-choice questions) only render in the foreground tab.
             await page.bring_to_front()
             try:
-                await page.wait_for_function(DETAIL_READY_JS, timeout=15_000)
+                await page.wait_for_function(DETAIL_READY_JS, timeout=config.timeout(15_000))
             except Exception as e:
                 raise RuntimeError(f"detail page never finished rendering: {item.url}") from e
         await page.wait_for_timeout(300)
@@ -238,7 +239,7 @@ class GoogleClassroom(Source):
         cid = b64(course.id)
         await page.goto(f"{BASE}/u/0/c/{cid}")
         try:
-            await page.wait_for_selector("[data-stream-item-id]", timeout=10_000)
+            await page.wait_for_selector("[data-stream-item-id]", timeout=config.timeout(10_000))
         except Exception:
             return []
         # The stream lazy-loads older posts as you scroll.
@@ -288,7 +289,7 @@ class GoogleClassroom(Source):
 
     async def _fill_post_comments(self, page: Page, item: Item) -> None:
         await page.goto(item.url)
-        await page.wait_for_selector("[data-comment-id]", state="attached", timeout=20_000)
+        await page.wait_for_selector("[data-comment-id]", state="attached", timeout=config.timeout(20_000))
         await page.wait_for_timeout(500)
         d = await page.evaluate(js.DETAIL_JS)
         if d:

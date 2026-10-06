@@ -16,6 +16,7 @@ from typing import Any
 
 from patchright.async_api import Page, Response
 
+from ... import config
 from ...models import Course, Item, ItemKind, ScrapeResult
 from ..auth.collegeboard import collegeboard_login, on_collegeboard_login
 from ..base import Source, register
@@ -73,11 +74,11 @@ class APClassroom(Source):
             # Either the app loads (session still valid) or we bounce through the CB login.
             await page.wait_for_url(
                 lambda u: "idp.collegeboard.org" in u or "/subjects" in u or "/assignments" in u,
-                timeout=45_000,
+                timeout=config.timeout(45_000),
             )
             if on_collegeboard_login(page):
                 await collegeboard_login(page)
-                await page.wait_for_url(lambda u: "apclassroom.collegeboard.org" in u, timeout=45_000)
+                await page.wait_for_url(lambda u: "apclassroom.collegeboard.org" in u, timeout=config.timeout(45_000))
             for _ in range(30):
                 if profiles:
                     break
@@ -113,7 +114,7 @@ class APClassroom(Source):
             try:
                 async with page.expect_response(
                     lambda r: "/student_assignments/" in r.url and f"status={status}" in r.url,
-                    timeout=30_000,
+                    timeout=config.timeout(30_000),
                 ) as resp:
                     await page.goto(f"{BASE}/{course.id}/assignments?status={status}")
                 data = await (await resp.value).json()

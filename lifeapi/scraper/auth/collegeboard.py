@@ -38,14 +38,14 @@ async def collegeboard_login(page: Page) -> None:
                                  'a[aria-label="Select Password."]:visible')
         # Redirects between account.collegeboard.org and the Okta page take a moment.
         try:
-            await ident.or_(pw).or_(choose_pw).first.wait_for(timeout=20_000)
+            await ident.or_(pw).or_(choose_pw).first.wait_for(timeout=config.timeout(20_000))
         except Exception:
             if not on_collegeboard_login(page):
                 return
             break
         if await choose_pw.count():
             await choose_pw.first.click()
-            await page.locator('input[type="password"]:visible').first.wait_for(timeout=10_000)
+            await page.locator('input[type="password"]:visible').first.wait_for(timeout=config.timeout(10_000))
             continue
         if await pw.count():
             await pw.first.fill(config.credential("COLLEGEBOARD_PASSWORD"))
@@ -56,7 +56,7 @@ async def collegeboard_login(page: Page) -> None:
         else:
             break
         try:
-            await page.wait_for_url(lambda u: u != url, timeout=15_000)
+            await page.wait_for_url(lambda u: u != url, timeout=config.timeout(15_000))
         except Exception:
             pass  # Okta swaps steps in place without a URL change
 

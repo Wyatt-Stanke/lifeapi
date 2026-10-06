@@ -46,13 +46,13 @@ async def launch_app(context: BrowserContext, page: Page, app_name: str) -> Page
         page.get_by_role("button", name=re.compile(re.escape(app_name), re.I))
     )
     try:
-        await tile.first.wait_for(timeout=20_000)
+        await tile.first.wait_for(timeout=config.timeout(20_000))
     except Exception as e:
         await dump_debug(page, "clever_no_app")
         raise LoginError(f"No {app_name!r} app on the Clever dashboard") from e
     # Tiles usually open a new tab.
     try:
-        async with context.expect_page(timeout=10_000) as new:
+        async with context.expect_page(timeout=config.timeout(10_000)) as new:
             await tile.first.click()
         app_page = await new.value
     except Exception:

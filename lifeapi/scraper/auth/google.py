@@ -79,7 +79,7 @@ async def google_login(page: Page) -> None:
 
 async def _wait_for_change(page: Page, old_url: str, timeout_ms: int = 15_000) -> None:
     try:
-        await page.wait_for_url(lambda u: u != old_url, timeout=timeout_ms)
+        await page.wait_for_url(lambda u: u != old_url, timeout=config.timeout(timeout_ms))
     except Exception:
         pass  # some steps change content without changing the URL
     await page.wait_for_load_state("domcontentloaded")
