@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Keeps the API running on 127.0.0.1:8000. Install: see README "Scheduling". -->
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.lifeapi.api</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/wyattstanke/Documents/projects/lifeapi/.venv/bin/python</string>
+        <string>-m</string>
+        <string>lifeapi.api</string>
+        <string>--host</string><string>127.0.0.1</string>
+        <string>--port</string><string>8000</string>
+    </array>
+    <key>WorkingDirectory</key><string>/Users/wyattstanke/Documents/projects/lifeapi</string>
+    <key>KeepAlive</key><true/>
+    <key>RunAtLoad</key><true/>
+    <key>StandardOutPath</key><string>/Users/wyattstanke/Documents/projects/lifeapi/data/api.log</string>
+    <key>StandardErrorPath</key><string>/Users/wyattstanke/Documents/projects/lifeapi/data/api.log</string>
+</dict>
+</plist>

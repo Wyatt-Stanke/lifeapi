@@ -1,0 +1,23 @@
+[project]
+name = "lifeapi"
+version = "1.0.0"
+description = "Scrapes schoolwork from Google Classroom, AP Classroom, VHL, Albert and Infinite Campus into one API"
+requires-python = ">=3.11"
+dependencies = [
+    "patchright>=1.55",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+lifeapi-scrape = "lifeapi.scraper.__main__:main"
+lifeapi-api = "lifeapi.api.__main__:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["lifeapi*"]

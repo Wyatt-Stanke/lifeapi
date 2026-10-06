@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Runs the scraper every 2 hours. Install: see README "Scheduling". -->
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.lifeapi.scraper</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/wyattstanke/Documents/projects/lifeapi/.venv/bin/python</string>
+        <string>-m</string>
+        <string>lifeapi.scraper</string>
+    </array>
+    <key>WorkingDirectory</key><string>/Users/wyattstanke/Documents/projects/lifeapi</string>
+    <key>StartInterval</key><integer>7200</integer>
+    <key>RunAtLoad</key><true/>
+    <key>StandardOutPath</key><string>/Users/wyattstanke/Documents/projects/lifeapi/data/scraper.log</string>
+    <key>StandardErrorPath</key><string>/Users/wyattstanke/Documents/projects/lifeapi/data/scraper.log</string>
+</dict>
+</plist>

@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lifeapi</title>
+</head>
+<body>
+<header>
+  <strong>lifeapi</strong> —
+  <nav style="display:inline">
+    <a href="#/">Today</a> |
+    <a href="#/upcoming">Upcoming</a> |
+    <a href="#/missing">Missing</a> |
+    <a href="#/announcements">Announcements</a> |
+    <a href="#/courses">Courses</a> |
+    <a href="#/grades">Grades</a> |
+    <a href="#/search">Search</a> |
+    <a href="#/status">Sync status</a>
+  </nav>
+</header>
+<hr>
+<main id="main">Loading…</main>
+<hr>
+<footer>
+  <small>
+    <label>API token <input id="token" type="password" size="20"></label>
+    · temporary explorer; raw API at <a href="/api/docs" target="_blank">/api/docs</a>
+  </small>
+</footer>
+
+<script>
+const API = "/api";
+const $ = (s) => document.querySelector(s);
+const h = (tag, attrs = {}, ...kids) => {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
+  return el;
+};
+
+// ---------- API ----------
+
+const tokenInput = $("#token");
+try { tokenInput.value = localStorage.getItem("lifeapi-token") || ""; } catch {}
+tokenInput.addEventListener("change", () => {
+  try { localStorage.setItem("lifeapi-token", tokenInput.value); } catch {}
+  route();
+});
+
+async function api(path, params = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v == null || v === "" || v === false) continue;
+    for (const x of [].concat(v)) qs.append(k, x);
+  }
+  const url = API + path + (qs.toString() ? "?" + qs : "");
+  const headers = tokenInput.value ? { Authorization: `Bearer ${tokenInput.value}` } : {};
+  const res = await fetch(url, { headers });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(`${res.status}: ${body?.detail ?? res.statusText} (${url})`);
+  return body;
+}
+
+// ---------- formatting ----------
+
+const SOURCE_NAMES = {
+  google_classroom: "Google Classroom", vhl: "VHL Central", infinite_campus: "Infinite Campus",
+  ap_classroom: "AP Classroom", albert: "Albert",
+};
+const sourceName = (s) => SOURCE_NAMES[s] || (s || "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+const label = (s) => s ? s.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase()) : "";
+const DONE = new Set(["turned_in", "completed", "graded", "done", "returned", "handed_in"]);
+
+const dayKey = (d) => d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
+const time = (d) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+const fullDate = (iso) => iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "";
+
+function relative(iso) {
+  if (!iso) return "";
+  const d = new Date(iso), now = new Date();
+  const startOf = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate());
+  const days = Math.round((startOf(d) - startOf(now)) / 86400000);
+  if (days === 0) {
+    const mins = Math.round((d - now) / 60000);
+    if (Math.abs(mins) < 60) return mins >= 0 ? `in ${mins} min` : `${-mins} min ago`;
+    return `today ${time(d)}`;
+  }
+  if (days === 1) return `tomorrow ${time(d)}`;
+  if (days === -1) return `yesterday ${time(d)}`;
+  if (days > 0 && days < 7) return `${d.toLocaleDateString(undefined, { weekday: "long" })} ${time(d)}`;
+  return days > 0 ? `in ${days} days` : `${-days} days ago`;
+}
+
+const when = (iso) => iso ? h("span", { title: fullDate(iso) }, relative(iso)) : "";
+
+function groupBy(list, keyFn) {
+  const m = new Map();
+  for (const x of list) { const k = keyFn(x); if (!m.has(k)) m.set(k, []); m.get(k).push(x); }
+  return m;
+}
+
+const itemHref = (it) => `#/item/${encodeURIComponent(it.source)}/${encodeURIComponent(it.id)}`;
+const courseHref = (source, id) => `#/course/${encodeURIComponent(source)}/${encodeURIComponent(id)}`;
+
+function courseLink(it) {
+  if (!it.course_name) return "";
+  return it.course_id ? h("a", { href: courseHref(it.source, it.course_id) }, it.course_name) : it.course_name;
+}
+
+function score(it) {
+  if (it.score != null && it.points_possible != null) return `${it.score}/${it.points_possible}`;
+  if (it.score != null) return String(it.score);
+  if (it.points_possible != null) return `${it.points_possible} pts`;
+  return "";
+}
+
+// One line per item: [time] Title — Course · Source · status · points
+function itemLine(it, { showDue = true, showCourse = true } = {}) {
+  const bits = [];
+  if (showCourse && it.course_name) bits.push(courseLink(it));
+  bits.push(sourceName(it.source));
+  if (it.kind !== "assignment") bits.push(label(it.kind));
+  if (it.status) bits.push(DONE.has(it.status) ? `✓ ${label(it.status)}` : label(it.status));
+  if (score(it)) bits.push(score(it));
+  const sep = bits.flatMap((b, i) => (i ? [" · ", b] : [b]));
+  return h("li", {},
+    showDue && it.due_at ? [when(it.due_at), " — "] : null,
+    showDue && !it.due_at && it.due_text ? [it.due_text, " — "] : null,
+    h("a", { href: itemHref(it) }, it.title || "(untitled)"),
+    h("br"), h("small", {}, sep));
+}
+
+const itemList = (items, opts) => items.length ? h("ul", {}, items.map((it) => itemLine(it, opts))) : h("p", {}, h("em", {}, "Nothing here."));
+
+function text(s) {
+  // Plain text with line breaks preserved and bare URLs linked.
+  const out = h("div", { style: "white-space: pre-wrap" });
+  for (const part of String(s).split(/(https?:\/\/\S+)/)) {
+    out.append(/^https?:\/\//.test(part) ? h("a", { href: part, target: "_blank" }, part) : part);
+  }
+  return out;
+}
+
+function attachments(list) {
+  if (!list?.length) return null;
+  return h("ul", {}, list.map((a) => h("li", {},
+    a.url ? h("a", { href: a.url, target: "_blank" }, a.title || a.url) : a.title,
+    a.type ? h("small", {}, ` (${a.type})`) : null)));
+}
+
+// ---------- views ----------
+
+async function viewToday() {
+  const [upcoming, missing, ann] = await Promise.all([
+    api("/items/upcoming", { days: 7 }), api("/items/missing"), api("/announcements", { days: 3 }),
+  ]);
+  const recentMissing = missing.filter((it) => new Date(it.due_at) > new Date(Date.now() - 14 * 86400000));
+  return [
+    h("h1", {}, new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })),
+    h("p", {},
+      h("a", { href: "#/upcoming" }, `${upcoming.length} due this week`), " · ",
+      h("a", { href: "#/missing" }, `${missing.length} missing`), ` (${recentMissing.length} from the last 2 weeks)`, " · ",
+      h("a", { href: "#/announcements" }, `${ann.length} announcements in 3 days`)),
+    h("h2", {}, "Due this week"),
+    ...byDay(upcoming),
+    h("h2", {}, "Recently missed"),
+    itemList(recentMissing),
+    h("h2", {}, "Latest announcements"),
+    announcementList(ann.slice(0, 5)),
+    ann.length > 5 ? h("p", {}, h("a", { href: "#/announcements" }, "More announcements →")) : null,
+  ];
+}
+
+function byDay(items) {
+  if (!items.length) return [h("p", {}, h("em", {}, "Nothing due."))];
+  return [...groupBy(items, (it) => dayKey(new Date(it.due_at)))].flatMap(([day, list]) => [
+    h("h3", {}, day), h("ul", {}, list.map((it) => itemLine(it, { showDue: false }))),
+  ]);
+}
+
+async function viewUpcoming(params) {
+  const days = Number(params.get("days") || 14);
+  const includeDone = params.get("done") === "1";
+  const items = await api("/items/upcoming", { days, include_done: includeDone });
+  const set = (k, v) => { params.set(k, v); location.hash = "#/upcoming?" + params; };
+  return [
+    h("h1", {}, "Upcoming"),
+    h("p", {},
+      "Next ", h("select", { onchange: (e) => set("days", e.target.value) },
+        [7, 14, 30, 60, 120].map((d) => h("option", { value: d, selected: d === days }, `${d} days`))),
+      " ", h("label", {}, h("input", { type: "checkbox", checked: includeDone, onchange: (e) => set("done", e.target.checked ? 1 : 0) }), " include finished work"),
+      ` — ${items.length} items`),
+    ...byDay(items),
+  ];
+}
+
+async function viewMissing(params) {
+  const all = params.get("all") === "1";
+  let items = await api("/items/missing");
+  const total = items.length;
+  if (!all) items = items.filter((it) => new Date(it.due_at) >= schoolYearStart());
+  const groups = [...groupBy(items, (it) => it.course_name || "(no course)")].sort((a, b) => b[1].length - a[1].length);
+  return [
+    h("h1", {}, "Missing work"),
+    h("p", {},
+      h("label", {}, h("input", { type: "checkbox", checked: all, onchange: (e) => { location.hash = "#/missing" + (e.target.checked ? "?all=1" : ""); } }),
+        " include previous school years"),
+      ` — showing ${items.length} of ${total}`),
+    h("p", {}, h("small", {}, "Past due and not marked done in the source. Some of these may be optional or already handled offline.")),
+    ...groups.flatMap(([course, list]) => [h("h3", {}, `${course} (${list.length})`), itemList(list, { showCourse: false })]),
+  ];
+}
+
+function schoolYearStart() {
+  const now = new Date();
+  return new Date(now.getMonth() >= 7 ? now.getFullYear() : now.getFullYear() - 1, 7, 1); // Aug 1
+}
+
+function announcementList(list) {
+  if (!list.length) return h("p", {}, h("em", {}, "No announcements."));
+  return h("div", {}, list.map((a) => h("article", {},
+    h("p", {},
+      h("strong", {}, courseLink(a) || sourceName(a.source)), " — ", a.author || "", " · ", when(a.posted_at),
+      " · ", h("a", { href: itemHref(a) }, "details")),
+    a.description ? h("blockquote", {}, text(a.description)) : h("blockquote", {}, a.title),
+    attachments(a.attachments),
+    h("hr"))));
+}
+
+async function viewAnnouncements(params) {
+  const days = Number(params.get("days") || 14);
+  const ann = await api("/announcements", { days });
+  return [
+    h("h1", {}, "Announcements"),
+    h("p", {}, "Last ", h("select", { onchange: (e) => { location.hash = "#/announcements?days=" + e.target.value; } },
+      [3, 7, 14, 30, 90, 365].map((d) => h("option", { value: d, selected: d === days }, `${d} days`))), ` — ${ann.length}`),
+    announcementList(ann),
+  ];
+}
+
+async function viewCourses(params) {
+  const inactive = params.get("inactive") === "1";
+  const courses = await api("/courses", { include_inactive: inactive });
+  return [
+    h("h1", {}, "Courses"),
+    h("p", {}, h("label", {}, h("input", { type: "checkbox", checked: inactive, onchange: (e) => { location.hash = "#/courses" + (e.target.checked ? "?inactive=1" : ""); } }),
+      " include archived / no longer seen")),
+    ...[...groupBy(courses, (c) => c.source)].flatMap(([source, list]) => [
+      h("h2", {}, `${sourceName(source)} (${list.length})`),
+      h("ul", {}, list.map((c) => h("li", {},
+        h("a", { href: courseHref(c.source, c.id) }, c.name),
+        c.section ? ` — ${c.section}` : "", c.teacher ? ` · ${c.teacher}` : "",
+        c.active === false ? h("em", {}, " (archived)") : ""))),
+    ]),
+  ];
+}
+
+async function viewCourse(source, id, params) {
+  const [courses, items, grades] = await Promise.all([
+    api("/courses", { source, include_inactive: true }),
+    api("/items", { source, course_id: id, limit: 2000, order: "posted" }),
+    api("/grades", { source }).catch(() => []),
+  ]);
+  const c = courses.find((x) => x.id === id) || { name: items[0]?.course_name || id };
+  const now = new Date();
+  const work = items.filter((it) => it.kind !== "announcement" && it.kind !== "material");
+  const upcoming = work.filter((it) => it.due_at && new Date(it.due_at) >= now).sort((a, b) => a.due_at.localeCompare(b.due_at));
+  const past = work.filter((it) => !upcoming.includes(it));
+  const materials = items.filter((it) => it.kind === "material");
+  const ann = items.filter((it) => it.kind === "announcement");
+  const courseGrades = grades.filter((g) => g.course_id === id);
+  return [
+    h("p", {}, h("a", { href: "#/courses" }, "← Courses")),
+    params.get("missing_item") ? h("p", {}, h("strong", {}, "That item hasn't been scraped yet, so here's its course.")) : null,
+    h("h1", {}, c.name),
+    h("p", {}, [sourceName(source), c.section, c.teacher].filter(Boolean).join(" · "),
+      c.url ? [" · ", h("a", { href: c.url, target: "_blank" }, `open in ${sourceName(source)}`)] : null),
+    courseGrades.length ? [h("h2", {}, "Grades"), gradeTable(courseGrades)] : null,
+    h("h2", {}, `Upcoming (${upcoming.length})`), itemList(upcoming, { showCourse: false }),
+    h("h2", {}, `Past & undated work (${past.length})`), itemList(past, { showCourse: false }),
+    materials.length ? [h("h2", {}, `Materials (${materials.length})`), itemList(materials, { showCourse: false, showDue: false })] : null,
+    h("h2", {}, `Announcements (${ann.length})`), announcementList(ann),
+  ];
+}
+
+async function viewItem(source, id) {
+  const it = await api(`/items/${encodeURIComponent(source)}/${encodeURIComponent(id)}`);
+  const facts = [
+    ["Course", courseLink(it)],
+    ["From", `${sourceName(it.source)} · ${label(it.kind)}`],
+    ["Posted by", it.author],
+    ["Posted", it.posted_at && [fullDate(it.posted_at), " (", relative(it.posted_at), ")"]],
+    ["Due", it.due_at ? [fullDate(it.due_at), " (", relative(it.due_at), ")"] : it.due_text],
+    ["Status", label(it.status)],
+    ["Points", score(it)],
+    ["Archived", it.active === false ? "Yes — no longer seen in the source" : null],
+  ].filter(([, v]) => v && (!Array.isArray(v) || v.length));
+  return [
+    h("p", {}, h("a", { href: "javascript:history.back()" }, "← Back")),
+    h("h1", {}, it.title),
+    it.url ? h("p", {}, h("a", { href: it.url, target: "_blank" }, `Open in ${sourceName(it.source)} ↗`)) : null,
+    h("table", {}, facts.map(([k, v]) => h("tr", {}, h("th", { align: "left" }, k), h("td", {}, v)))),
+    it.description ? [h("h2", {}, "Description"), text(it.description)] : null,
+    it.attachments?.length ? [h("h2", {}, "Attachments"), attachments(it.attachments)] : null,
+    it.extra?.submitted_work?.length ? [h("h2", {}, "Your submitted work"), attachments(it.extra.submitted_work)] : null,
+    it.comments?.length ? [h("h2", {}, "Comments"), h("ul", {}, it.comments.map((c) => h("li", {},
+      h("strong", {}, c.author || "?"), c.private ? " (private)" : "", c.posted_at ? ` · ${c.posted_at}` : "", ": ", c.text)))] : null,
+    h("details", {}, h("summary", {}, "All data"), h("pre", {}, JSON.stringify(it, null, 2))),
+  ];
+}
+
+function gradeTable(grades) {
+  return h("table", { border: 1, cellpadding: 4 },
+    h("tr", {}, ["Course", "Term", "Grade", "%", "Teacher", ""].map((x) => h("th", {}, x))),
+    grades.map((g) => h("tr", {},
+      h("td", {}, g.course_id ? h("a", { href: courseHref(g.source, g.course_id) }, g.course_name) : g.course_name),
+      h("td", {}, [g.term, g.task].filter(Boolean).join(" — ")),
+      h("td", {}, h("strong", {}, g.letter || "")),
+      h("td", {}, g.percent != null ? `${g.percent}%` : ""),
+      h("td", {}, g.teacher || ""),
+      h("td", {}, h("a", { href: `#/grade/${encodeURIComponent(g.source)}/${encodeURIComponent(g.id)}` },
+        g.entries?.length ? `${g.entries.length} assignments →` : "details →")))));
+}
+
+async function viewGrades(params) {
+  const grades = await api("/grades");
+  const terms = [...new Set(grades.map((g) => g.term).filter(Boolean))];
+  const term = params.get("term") || "";
+  const shown = term ? grades.filter((g) => g.term === term) : grades;
+  return [
+    h("h1", {}, "Grades"),
+    terms.length > 1 ? h("p", {}, "Term ", h("select", { onchange: (e) => { location.hash = "#/grades" + (e.target.value ? "?term=" + encodeURIComponent(e.target.value) : ""); } },
+      h("option", { value: "" }, "All"), terms.map((t) => h("option", { value: t, selected: t === term }, t)))) : null,
+    shown.length ? gradeTable(shown) : h("p", {}, h("em", {}, "No grades yet.")),
+  ];
+}
+
+async function viewGrade(source, id) {
+  const g = (await api("/grades", { source, include_inactive: true })).find((x) => x.id === id);
+  if (!g) throw new Error("Grade not found");
+  return [
+    h("p", {}, h("a", { href: "#/grades" }, "← Grades")),
+    h("h1", {}, g.course_name),
+    h("p", {}, [g.term, g.task, g.teacher, sourceName(g.source)].filter(Boolean).join(" · "),
+      g.url ? [" · ", h("a", { href: g.url, target: "_blank" }, "open ↗")] : null),
+    h("p", {}, h("strong", {}, `${g.letter || "—"}${g.percent != null ? ` (${g.percent}%)` : ""}`)),
+    g.categories?.length ? [h("h2", {}, "Categories"), h("table", { border: 1, cellpadding: 4 },
+      h("tr", {}, Object.keys(g.categories[0]).map((k) => h("th", {}, label(k)))),
+      g.categories.map((c) => h("tr", {}, Object.values(c).map((v) => h("td", {}, typeof v === "object" && v ? JSON.stringify(v) : String(v ?? ""))))))] : null,
+    h("h2", {}, `Assignments (${g.entries?.length || 0})`),
+    g.entries?.length ? h("table", { border: 1, cellpadding: 4 },
+      h("tr", {}, ["Assignment", "Category", "Due", "Score", "%", "Flags", "Comments"].map((x) => h("th", {}, x))),
+      g.entries.map((e) => h("tr", {},
+        h("td", {}, e.name), h("td", {}, e.category || ""), h("td", {}, e.due_at || ""),
+        h("td", {}, e.score || (e.points_earned != null ? `${e.points_earned}/${e.points_possible ?? "?"}` : "")),
+        h("td", {}, e.percent != null ? `${e.percent}%` : ""),
+        h("td", {}, e.flags?.length ? h("strong", {}, e.flags.join(", ")) : ""),
+        h("td", {}, e.comments || "")))) : null,
+    h("details", {}, h("summary", {}, "All data"), h("pre", {}, JSON.stringify(g, null, 2))),
+  ];
+}
+
+async function viewSearch(params) {
+  const q = params.get("q") || "";
+  const kind = params.get("kind") || "";
+  const input = h("input", { type: "search", value: q, size: 40, placeholder: "title or course name", autofocus: true });
+  const kindSel = h("select", {}, ["", "assignment", "quiz", "question", "material", "announcement"].map((k) => h("option", { value: k, selected: k === kind }, k ? label(k) : "Anything")));
+  const form = h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    const p = new URLSearchParams({ q: input.value });
+    if (kindSel.value) p.set("kind", kindSel.value);
+    location.hash = "#/search?" + p;
+  } }, input, " ", kindSel, " ", h("button", {}, "Search"));
+  const results = q || kind ? await api("/items", { q, kind, order: "posted", limit: 300 }) : null;
+  return [
+    h("h1", {}, "Search"), form,
+    h("p", {}, "Or paste a link from Google Classroom, VHL, AP Classroom, Infinite Campus, …"), linkForm(),
+    results ? [h("p", {}, `${results.length} results${results.length === 300 ? " (showing first 300)" : ""}`), itemList(results)] : null,
+  ];
+}
+
+async function viewStatus() {
+  const sources = await api("/sources");
+  return [
+    h("h1", {}, "Sync status"),
+    h("table", { border: 1, cellpadding: 4 },
+      h("tr", {}, ["Source", "Last run", "Result", "Courses", "Items", "Grades", "Last success"].map((x) => h("th", {}, x))),
+      sources.map((s) => {
+        const r = s.last_run;
+        const result = r.ok == null ? (r.finished_at ? "?" : "running…") : r.ok ? "OK" : h("span", {}, h("strong", {}, "Failed"), r.error ? h("details", {}, h("summary", {}, "error"), h("pre", {}, r.error)) : null);
+        return h("tr", {},
+          h("td", {}, sourceName(s.source)), h("td", {}, when(r.started_at)), h("td", {}, result),
+          h("td", {}, r.counts.courses ?? ""), h("td", {}, r.counts.items ?? ""), h("td", {}, r.counts.grades ?? ""),
+          h("td", {}, s.last_success_at ? when(s.last_success_at) : "never"));
+      })),
+  ];
+}
+
+// ---------- link resolver: <this site>/<any source URL> → the matching page ----------
+
+// Google Classroom URLs carry IDs as base64 of the numeric ID we store.
+function classroomId(seg) {
+  if (/^\d+$/.test(seg)) return seg;
+  try {
+    const s = atob(seg.replace(/-/g, "+").replace(/_/g, "/"));
+    return /^\d+$/.test(s) ? s : null;
+  } catch { return null; }
+}
+
+// Course/item IDs are global across Google accounts, so the account selector (/u/{n} or
+// ?authuser=) is ignored and a link copied while signed into any account resolves.
+function parseClassroom(u) {
+  if (u.hostname !== "classroom.google.com") return null;
+  const parts = u.pathname.replace(/^\/u\/\d+(?=\/|$)/, "").split("/").filter(Boolean);
+  // /c/{course}/{a|m|sa|mc|p}/{item}[/details|/submissions/...]
+  if (parts[0] === "c" && parts.length >= 4) {
+    const item = classroomId(parts[3]);
+    if (item) return { item, course: classroomId(parts[1]) };
+  }
+  // /c/{course}, /w/{course}/t/all, /r/{course}/sort-name, ...
+  if (["c", "w", "r"].includes(parts[0]) && parts[1]) {
+    const course = classroomId(parts[1]);
+    if (course) return { course };
+  }
+  return null;
+}
+
+const urlPathKey = (u) => u.hostname.replace(/^www\./, "") + u.pathname.replace(/^\/u\/\d+(?=\/|$)/, "").replace(/\/+$/, "");
+
+// Match against the source URLs stored on every record. Host + path must match; query params
+// break ties (e.g. Infinite Campus pages differ only by classroomSectionID / selectedTermID).
+function bestUrlMatch(u, candidates) {
+  const key = urlPathKey(u);
+  let best = null, bestScore = -Infinity;
+  for (const c of candidates) {
+    let v;
+    try { v = new URL(c.url); } catch { continue; }
+    if (urlPathKey(v) !== key) continue;
+    let score = 0;
+    for (const [k, val] of v.searchParams) {
+      if (k === "authuser") continue;
+      if (u.searchParams.get(k) === val) score += 1;
+      else score -= u.searchParams.has(k) ? 1000 : 1; // a conflicting value rules it out
+    }
+    if (score > bestScore && score > -1000) { best = c; bestScore = score; }
+  }
+  return best;
+}
+
+async function allItems() {
+  const out = [];
+  for (let offset = 0; ; offset += 2000) {
+    const page = await api("/items", { include_inactive: true, limit: 2000, offset });
+    out.push(...page);
+    if (page.length < 2000) return out;
+  }
+}
+
+function parseLink(raw) {
+  let s = raw.trim().replace(/^(https?):\/(?!\/)/i, "$1://"); // some clients collapse "//" in paths
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = "https://" + s;
+  try { return new URL(s); } catch { return null; }
+}
+
+const exists = (path) => api(path).then(() => true, (e) => (e.message.startsWith("404") ? false : Promise.reject(e)));
+
+async function resolveLink(u) {
+  const gc = parseClassroom(u);
+  if (gc?.item && await exists(`/items/google_classroom/${gc.item}`)) return `#/item/google_classroom/${gc.item}`;
+
+  const [items, courses, grades] = [await allItems(), await api("/courses", { include_inactive: true }), await api("/grades", { include_inactive: true })];
+  const match = bestUrlMatch(u, [
+    ...items.map((x) => ({ url: x.url, href: itemHref(x) })),
+    ...courses.map((x) => ({ url: x.url, href: courseHref(x.source, x.id) })),
+    ...grades.map((x) => ({ url: x.url, href: `#/grade/${encodeURIComponent(x.source)}/${encodeURIComponent(x.id)}` })),
+  ]);
+  if (match) return match.href;
+
+  // A Classroom item we haven't scraped yet still lands on its course, if we know the course.
+  if (gc?.course && courses.some((c) => c.source === "google_classroom" && c.id === gc.course)) {
+    return courseHref("google_classroom", gc.course) + (gc.item ? "?missing_item=1" : "");
+  }
+  return null;
+}
+
+function linkForm(value = "") {
+  const input = h("input", { type: "url", value, size: 60, placeholder: "https://classroom.google.com/u/1/c/…/a/…/details" });
+  return h("form", { onsubmit: (e) => { e.preventDefault(); location.hash = "#/open?url=" + encodeURIComponent(input.value); } },
+    input, " ", h("button", {}, "Open"));
+}
+
+async function viewOpen(params) {
+  const raw = params.get("url") || "";
+  const u = parseLink(raw);
+  if (u) {
+    const target = await resolveLink(u);
+    if (target) { location.replace(target); return "Opening…"; }
+  }
+  return [
+    h("h1", {}, "Link not found"),
+    h("p", {}, u ? ["lifeapi has nothing matching ", h("a", { href: u.href, target: "_blank" }, u.href), ". It may not have been scraped yet."] : `"${raw}" isn't a URL.`),
+    h("p", {}, "Try another link:"), linkForm(raw),
+  ];
+}
+
+// ---------- router ----------
+
+const routes = [
+  [/^\/$/, viewToday],
+  [/^\/upcoming$/, viewUpcoming],
+  [/^\/missing$/, viewMissing],
+  [/^\/announcements$/, viewAnnouncements],
+  [/^\/courses$/, viewCourses],
+  [/^\/course\/([^/]+)\/([^/]+)$/, viewCourse],
+  [/^\/item\/([^/]+)\/([^/]+)$/, viewItem],
+  [/^\/grades$/, viewGrades],
+  [/^\/grade\/([^/]+)\/([^/]+)$/, viewGrade],
+  [/^\/search$/, viewSearch],
+  [/^\/status$/, viewStatus],
+  [/^\/open$/, viewOpen],
+];
+
+let seq = 0;
+async function route() {
+  // <this site>/<source URL>: everything after the first "/" (query and fragment included) is the link.
+  if (location.pathname !== "/" && location.pathname !== "/index.html") {
+    const link = location.href.slice(location.origin.length + 1);
+    history.replaceState(null, "", "/#/open?url=" + encodeURIComponent(link));
+  }
+  const [path, query] = (location.hash.slice(1) || "/").split("?");
+  const params = new URLSearchParams(query || "");
+  const main = $("#main");
+  const mine = ++seq;
+  main.textContent = "Loading…";
+  for (const [re, view] of routes) {
+    const m = path.match(re);
+    if (!m) continue;
+    try {
+      const args = m.slice(1).map(decodeURIComponent);
+      const content = await view(...args, params);
+      if (mine === seq) main.replaceChildren(...[content].flat(Infinity).filter((x) => x != null && x !== false));
+    } catch (e) {
+      if (mine === seq) main.replaceChildren(h("p", {}, h("strong", {}, "Couldn't load: "), e.message));
+    }
+    if (mine === seq) document.querySelector("[autofocus]")?.focus();
+    return;
+  }
+  main.replaceChildren(h("p", {}, "Page not found. ", h("a", { href: "#/" }, "Go to Today")));
+}
+
+addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>

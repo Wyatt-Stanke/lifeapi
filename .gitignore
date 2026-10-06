@@ -1,0 +1,21 @@
+# Secrets: credentials live only in .env (any variant)
+.env
+.env.*
+
+# Runtime data: SQLite DB, Chrome browser profile (contains live login sessions),
+# debug snapshots, dev scratch scripts, logs
+data/
+data/browser-profile/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS / editor
+.DS_Store
