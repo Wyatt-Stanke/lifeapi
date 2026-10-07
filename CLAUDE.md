@@ -87,7 +87,7 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   Assignments come from `student_assignments/<subject>?status=assigned|upcoming|completed`.
 - **Infinite Campus**: after SSO, calls `/campus/resources/portal/grades` and
   `/grades/detail/<sectionID>` with `page.request`, plus `/campus/api/campus/grading/gpas/my/gpa`
-  for overall GPAs (this district shows only a weighted cumulative GPA, on a 0–100 scale that weighting can push past 100). The session cookie doesn't persist
+  for overall GPAs (this district shows only a weighted cumulative GPA, as a percentage that weighting can push past 100). The session cookie doesn't persist
   across browser launches, so it signs in every run. Grades only, by request.
 - **VHL**: in-page `fetch` of `study_schedule/event_calendar/YYYY-MM` (HTML fragments
   listing the due dates) and `assignments_by_due_date?due_date=` (JSON). Never open
