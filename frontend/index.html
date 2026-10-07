@@ -1,10 +1,10 @@
-<!doctype html>
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN" "http://www.w3.org/TR/REC-html40/loose.dtd">
 <html lang="en">
 <head>
-<meta charset="utf-8">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>lifeapi</title>
-<style>
+<style type="text/css">
 /* International Style Sheets, Level 1.
    The Swiss style, taken as far as CSS1 (W3C Recommendation, 17 December 1996) can take it:
    1. CSS1's properties, units and selectors only.
@@ -12,7 +12,10 @@
    3. Element names only. The markup has no classes to hang styles on.
    4. The page must still read as plain HTML with this sheet switched off.
    5. Generic font families only. The sheet asks for sans-serif; the browser picks the face.
-   #/colophon checks this sheet against those rules. */
+   6. HTML 4.0 elements only (W3C Recommendation, 18 December 1997).
+   7. Relative lengths only, so the reader's own font size scales the whole design.
+   8. The rules fit on one 80x24 terminal screen: 1,920 bytes, minified. Comments are free.
+   #/colophon checks this sheet, and the page, against those rules. */
 
 body {
   margin: 0;
@@ -20,68 +23,65 @@ body {
   background: white;
   color: black;
   font-family: sans-serif;
-  font-size: 16px;
   line-height: 1.3;
 }
 
-/* The grid: a label column (the left quarter) and a content column (the rest). main is the
-   content column, and labels hang out of it on negative margins (-33.333% of main is a quarter
-   of the page), because CSS1 has no grid, no positioning and no sibling selectors. */
-main { margin: 0 0 5em 25% }
-footer { margin-left: 25%; padding-top: .6em }
+/* The grid: a label column (the left quarter) and a content column (the rest). The content
+   column is the page's one top-level div, and labels hang out of it on negative margins
+   (-33.333% of the column is a quarter of the page): CSS1 has no grid, positioning or
+   sibling selectors. */
+div { margin: .8em 0 5em 25% }
+div div { margin: 0 }
+address { margin-left: 25%; padding-top: .6em }
 
-header {
-  border-top: 12px solid black;
-  padding-top: .5em;
+/* The header is a <center>, as in 1997. The sheet un-centres it. */
+center {
+  padding: .5em 0 0 25%;
+  border-top: .75em solid black;
+  text-align: left;
   font-weight: bold;
 }
-header b { float: left; width: 22% }
-nav { margin-left: 25% }
-nav b { float: none; width: auto }
-main nav { margin: .8em 0 0 -33.333% }
-td details { margin: 0 }
+center b { float: left; width: 29.333%; margin-left: -33.333% }
+center em { font-style: normal }
 
-hr {
-  clear: both;
-  margin: .6em 0 0 0;
-  border-style: solid;
-  border-width: 1px 0 0 0;
-  border-color: black;
-}
+hr { clear: both; margin: .6em 0 0; border: 0; border-top: thin solid black }
+div hr { margin: 1.2em 0 1.2em -33.333% }
 
-h1 {
-  margin: .45em 0 .3em -33.333%;
-  font-size: 4em;
-  line-height: .95;
-  letter-spacing: -.045em;
-}
+h1 { margin: .45em 0 .3em -33.333%; font-size: 4em; line-height: .95; letter-spacing: -.045em }
 h2 {
   clear: both;
   margin: 2.2em 0 .9em -33.333%;
   padding-top: .3em;
-  border-top: 3px solid black;
+  border-top: medium solid black;
   font-size: 1.5em;
   line-height: 1.1;
   letter-spacing: -.02em;
 }
 /* Labels are caption-sized, with a line box as tall as the text's, so they sit on its baselines. */
-h3 {
+h3, dt, cite {
   float: left;
   clear: left;
   width: 29.333%;
-  margin: 0 0 1em -33.333%;
+  margin: 0 0 0 -33.333%;
   font-size: .8125em;
+  font-weight: bold;
   line-height: 1.6;
 }
-hgroup { margin-bottom: 2.5em }
-hgroup p {
-  margin: 0;
-  font-size: 1.5em;
-  line-height: 1.2;
-  letter-spacing: -.01em;
+/* A byline hangs out of its blockquote, which is two thirds of the column. */
+cite { width: 44%; margin-left: -50%; font-style: normal; font-weight: normal }
+
+/* The standfirst is <big>, and a headline number is <big><big>: bigger text, styled or not. */
+big { font-size: 1.5em; line-height: 1.2 }
+big big {
+  display: block;
+  margin: 0 0 .05em -33.333%;
+  font-size: 7.333em;
+  font-weight: bold;
+  line-height: .8;
+  letter-spacing: -.055em;
 }
 
-p, ul, ol, dl, blockquote, details, form { margin: 0 0 1em 0 }
+p, ul, ol, dl, blockquote, form { margin: 0 0 1em 0 }
 blockquote { width: 66.666% }
 ul, ol { padding: 0 }
 ul { list-style-type: square }
@@ -89,90 +89,48 @@ li { margin-bottom: .5em }
 li a { font-weight: bold }
 small { font-size: .8125em }
 small a { font-weight: normal }
-pre { margin: 0 0 1em 0; font-size: .8125em }
+dd { margin: 0 0 .35em 0 }
 
 /* Red is the browser's own :active colour, borrowed for anything urgent. */
 strong, strong a:link, strong a:visited { color: #e00 }
 
-dt {
-  float: left;
-  clear: left;
-  width: 29.333%;
-  margin-left: -33.333%;
-  font-weight: bold;
-}
-dd { margin: 0 0 .35em 0 }
-
-article { clear: both }
-article p {
-  float: left;
-  width: 29.333%;
-  margin: 0 0 1em -33.333%;
-  font-size: .8125em;
-  line-height: 1.6;
-}
-article hr { margin: 1.2em 0 1.2em -33.333% }
-
-/* No border-collapse until CSS2: the browser's 2px of cell spacing breaks every rule. */
-table {
-  width: 133.333%;
-  margin: 0 0 1.5em -33.333%;
-  border: 0;
-}
+/* No border-collapse until CSS2: the browser's cell spacing breaks every rule. */
+table { width: 133.333%; margin: 0 0 1.5em -33.333%; border: 0 }
 th, td {
   padding: .35em .8em .35em 0;
   border: 0;
-  border-bottom: 1px solid black;
+  border-bottom: thin solid black;
   text-align: left;
   vertical-align: top;
 }
-th { border-bottom: 3px solid black }
-
-/* Big numbers. No viewport units, so they're as big as a desktop allows and no bigger. */
-data {
-  display: block;
-  margin: 0 0 .05em -33.333%;
-  font-size: 11em;
-  font-weight: bold;
-  line-height: .8;
-  letter-spacing: -.055em;
-}
-hgroup data {
-  display: inline;
-  margin: 0;
-  font-size: 1em;
-  line-height: 1.2;
-  letter-spacing: -.01em;
-}
+th { border-bottom: medium solid black }
 </style>
 </head>
 <body>
-<header>
+<center>
   <b>lifeapi</b>
-  <nav>
-    <a href="#/">Today</a> |
-    <a href="#/upcoming">Upcoming</a> |
-    <a href="#/missing">Missing</a> |
-    <a href="#/announcements">Announcements</a> |
-    <a href="#/courses">Courses</a> |
-    <a href="#/grades">Grades</a> |
-    <a href="#/search">Search</a> |
-    <a href="#/status">Sync status</a>
-  </nav>
-</header>
+  <a href="#/">Today</a> |
+  <a href="#/upcoming">Upcoming</a> |
+  <a href="#/missing">Missing</a> |
+  <a href="#/announcements">Announcements</a> |
+  <a href="#/courses">Courses</a> |
+  <a href="#/grades">Grades</a> |
+  <a href="#/search">Search</a> |
+  <a href="#/status">Sync status</a>
+</center>
 <hr>
-<main id="main">Loading…</main>
+<div id="main">Loading…</div>
 <hr>
-<footer>
+<address>
   <small>
     <label>API token <input id="token" type="password" size="20"></label>
     · temporary explorer; raw API at <a href="/api/docs" target="_blank">/api/docs</a>
-    · set in International Style Sheets, Level 1 (<a href="#/colophon">colophon</a>)
+    · <span id="badge">HTML 4.0 + CSS1</span>, best viewed with any browser (<a href="#/colophon">colophon</a>)
     · <button id="style-toggle" type="button">Turn style sheet off</button>
   </small>
-</footer>
+</address>
 
-<script>
+<script type="text/javascript">
 const API = "/api";
 const $ = (s) => document.querySelector(s);
 const h = (tag, attrs = {}, ...kids) => {
@@ -223,8 +181,10 @@ const label = (s) => s ? s.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCas
 const DONE = new Set(["turned_in", "completed", "graded", "done", "returned", "handed_in"]);
 // GPAs are published to three places; JSON drops the trailing zeros (99.150 arrives as 99.15).
 const gpaText = (n) => n.toFixed(3);
-// A headline number. The style sheet sets <data> big (and inline in a standfirst).
-const num = (value, text = String(value)) => h("data", { value }, text);
+// A page's standfirst, the line under its h1: <big>, so it's bigger with or without the sheet.
+const standfirst = (...kids) => h("p", {}, h("big", {}, kids));
+// A headline number: <big><big>. The sheet sets it huge; without it, it's two steps bigger.
+const huge = (text) => h("big", {}, h("big", {}, String(text)));
 
 const dayKey = (d) => d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
 const time = (d) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -314,14 +274,13 @@ async function viewToday() {
     api("/items/upcoming", { days: 7 }), api("/items/missing"), api("/announcements", { days: 3 }),
   ]);
   const recentMissing = missing.filter((it) => new Date(it.due_at) > new Date(Date.now() - 14 * 86400000));
-  const missingLink = h("a", { href: "#/missing" }, num(missing.length), " missing");
+  const missingLink = h("a", { href: "#/missing" }, h("b", {}, missing.length), " missing");
   return [
-    h("hgroup", {},
-      h("h1", {}, new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })),
-      h("p", {},
-        h("a", { href: "#/upcoming" }, num(upcoming.length), " due this week"), " · ",
-        missing.length ? h("strong", {}, missingLink) : missingLink, ` (${recentMissing.length} from the last 2 weeks)`, " · ",
-        h("a", { href: "#/announcements" }, num(ann.length), " announcements in 3 days"))),
+    h("h1", {}, new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })),
+    standfirst(
+      h("a", { href: "#/upcoming" }, h("b", {}, upcoming.length), " due this week"), " · ",
+      missing.length ? h("strong", {}, missingLink) : missingLink, ` (${recentMissing.length} from the last 2 weeks)`, " · ",
+      h("a", { href: "#/announcements" }, h("b", {}, ann.length), " announcements in 3 days")),
     h("h2", {}, "Due this week"),
     ...byDay(upcoming),
     h("h2", {}, "Recently missed"),
@@ -377,15 +336,16 @@ function schoolYearStart() {
   return new Date(now.getMonth() >= 7 ? now.getFullYear() : now.getFullYear() - 1, 7, 1); // Aug 1
 }
 
+// Each announcement is a blockquote with a <cite> byline, then an <hr>.
 function announcementList(list) {
   if (!list.length) return h("p", {}, h("em", {}, "No announcements."));
-  return h("div", {}, list.map((a) => h("article", {},
-    h("p", {},
+  return list.map((a) => [h("blockquote", {},
+    h("cite", {},
       h("b", {}, courseLink(a) || sourceName(a.source)), " — ", a.author || "", " · ", when(a.posted_at),
       " · ", h("a", { href: itemHref(a) }, "details")),
-    a.description ? h("blockquote", {}, text(a.description)) : h("blockquote", {}, a.title),
-    attachments(a.attachments),
-    h("hr"))));
+    a.description ? text(a.description) : h("div", {}, a.title),
+    attachments(a.attachments)),
+    h("hr")]);
 }
 
 async function viewAnnouncements(params) {
@@ -431,12 +391,11 @@ async function viewCourse(source, id, params) {
   const ann = items.filter((it) => it.kind === "announcement");
   const courseGrades = grades.filter((g) => g.course_id === id);
   return [
-    h("nav", {}, h("a", { href: "#/courses" }, "← Courses")),
+    h("p", {}, h("a", { href: "#/courses" }, "← Courses")),
     params.get("missing_item") ? h("p", {}, h("strong", {}, "That item hasn't been scraped yet, so here's its course.")) : null,
-    h("hgroup", {},
-      h("h1", {}, c.name),
-      h("p", {}, [sourceName(source), c.section, c.teacher].filter(Boolean).join(" · "),
-        c.url ? [" · ", h("a", { href: c.url, target: "_blank" }, `open in ${sourceName(source)}`)] : null)),
+    h("h1", {}, c.name),
+    standfirst([sourceName(source), c.section, c.teacher].filter(Boolean).join(" · "),
+      c.url ? [" · ", h("a", { href: c.url, target: "_blank" }, `open in ${sourceName(source)}`)] : null),
     courseGrades.length ? [h("h2", {}, "Grades"), gradeTable(courseGrades)] : null,
     h("h2", {}, `Upcoming (${upcoming.length})`), itemList(upcoming, { showCourse: false }),
     h("h2", {}, `Past & undated work (${past.length})`), itemList(past, { showCourse: false }),
@@ -458,17 +417,42 @@ async function viewItem(source, id) {
     ["Archived", it.active === false ? "Yes — no longer seen in the source" : null],
   ].filter(([, v]) => v && (!Array.isArray(v) || v.length));
   return [
-    h("nav", {}, h("a", { href: "javascript:history.back()" }, "← Back")),
-    h("hgroup", {},
-      h("h1", {}, it.title),
-      it.url ? h("p", {}, h("a", { href: it.url, target: "_blank" }, `Open in ${sourceName(it.source)} ↗`)) : null),
+    h("p", {}, h("a", { href: "javascript:history.back()" }, "← Back")),
+    h("h1", {}, it.title),
+    it.url ? standfirst(h("a", { href: it.url, target: "_blank" }, `Open in ${sourceName(it.source)} ↗`)) : null,
     h("dl", {}, facts.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])),
     it.description ? [h("h2", {}, "Description"), h("blockquote", {}, text(it.description))] : null,
     it.attachments?.length ? [h("h2", {}, "Attachments"), attachments(it.attachments)] : null,
     it.extra?.submitted_work?.length ? [h("h2", {}, "Your submitted work"), attachments(it.extra.submitted_work)] : null,
     it.comments?.length ? [h("h2", {}, "Comments"), h("ul", {}, it.comments.map((c) => h("li", {},
       h("b", {}, c.author || "?"), c.private ? " (private)" : "", c.posted_at ? ` · ${c.posted_at}` : "", ": ", c.text)))] : null,
-    h("details", {}, h("summary", {}, "All data"), h("pre", {}, JSON.stringify(it, null, 2))),
+    h("p", {}, h("a", { href: `${itemHref(it)}/data` }, "All data →")),
+  ];
+}
+
+// Preformatted text with long lines broken at `width` columns, continuing under their own
+// indent: white-space: pre-wrap and overflow are CSS2, so a long line would run off the page.
+function wrapLines(s, width = 100) {
+  return String(s).split("\n").flatMap((line) => {
+    const indent = line.match(/^ */)[0].slice(0, width / 2) + "    ";
+    const out = [line.slice(0, width)];
+    for (let i = width; i < line.length; i += width - indent.length) out.push(indent + line.slice(i, i + width - indent.length));
+    return out;
+  }).join("\n");
+}
+
+// A record's raw JSON, on a page of its own: HTML 4.0 has no <details> to fold it away in.
+async function viewData(kind, source, id) {
+  const record = kind === "item"
+    ? await api(`/items/${encodeURIComponent(source)}/${encodeURIComponent(id)}`)
+    : (await api("/grades", { source, include_inactive: true })).find((x) => x.id === id);
+  if (!record) throw new Error(`No ${kind} ${source}/${id}`);
+  const json = JSON.stringify(record, null, 2);
+  return [
+    h("p", {}, h("a", { href: `#/${kind}/${encodeURIComponent(source)}/${encodeURIComponent(id)}` }, `← ${record.title || record.course_name}`)),
+    h("h1", {}, "All data"),
+    h("p", {}, copyButton(async () => json, "Copy JSON"), " ", h("small", {}, "Long lines are broken here to fit; the copy is exact.")),
+    h("pre", {}, wrapLines(json)),
   ];
 }
 
@@ -494,7 +478,7 @@ async function viewGrades(params) {
   const shown = term ? grades.filter((g) => g.term === term) : grades;
   return [
     h("h1", {}, "Grades"),
-    gpas.map((g) => h("p", {}, `${g.course_name}${g.term ? ` (${g.term})` : ""}: `, num(g.gpa, gpaText(g.gpa)),
+    gpas.map((g) => h("p", {}, `${g.course_name}${g.term ? ` (${g.term})` : ""}: `, huge(gpaText(g.gpa)),
       g.extra?.weighted === false ? " unweighted" : "", g.extra?.rank != null ? ` · rank ${g.extra.rank}${g.extra.out_of ? ` of ${g.extra.out_of}` : ""}` : "")),
     terms.length > 1 ? h("p", {}, "Term ", h("select", { onchange: (e) => { location.hash = "#/grades" + (e.target.value ? "?term=" + encodeURIComponent(e.target.value) : ""); } },
       h("option", { value: "" }, "All"), terms.map((t) => h("option", { value: t, selected: t === term }, t)))) : null,
@@ -506,13 +490,12 @@ async function viewGrade(source, id) {
   const g = (await api("/grades", { source, include_inactive: true })).find((x) => x.id === id);
   if (!g) throw new Error("Grade not found");
   return [
-    h("nav", {}, h("a", { href: "#/grades" }, "← Grades")),
-    h("hgroup", {},
-      h("h1", {}, g.course_name),
-      h("p", {}, [g.term, g.task, g.teacher, sourceName(g.source)].filter(Boolean).join(" · "),
-        g.url ? [" · ", h("a", { href: g.url, target: "_blank" }, "open ↗")] : null)),
-    h("p", {}, g.gpa != null ? ["GPA ", num(g.gpa, gpaText(g.gpa))]
-      : [num(g.percent ?? "", g.letter || "—"), g.percent != null ? ` (${g.percent}%)` : ""]),
+    h("p", {}, h("a", { href: "#/grades" }, "← Grades")),
+    h("h1", {}, g.course_name),
+    standfirst([g.term, g.task, g.teacher, sourceName(g.source)].filter(Boolean).join(" · "),
+      g.url ? [" · ", h("a", { href: g.url, target: "_blank" }, "open ↗")] : null),
+    h("p", {}, g.gpa != null ? ["GPA ", huge(gpaText(g.gpa))]
+      : [huge(g.letter || "—"), g.percent != null ? ` (${g.percent}%)` : ""]),
     g.categories?.length ? [h("h2", {}, "Categories"), h("table", { border: 1, cellpadding: 4 },
       h("tr", {}, Object.keys(g.categories[0]).map((k) => h("th", {}, label(k)))),
       g.categories.map((c) => h("tr", {}, Object.values(c).map((v) => h("td", {}, typeof v === "object" && v ? JSON.stringify(v) : String(v ?? ""))))))] : null,
@@ -525,14 +508,14 @@ async function viewGrade(source, id) {
         h("td", {}, e.percent != null ? `${e.percent}%` : ""),
         h("td", {}, e.flags?.length ? h("strong", {}, e.flags.join(", ")) : ""),
         h("td", {}, e.comments || "")))) : null,
-    h("details", {}, h("summary", {}, "All data"), h("pre", {}, JSON.stringify(g, null, 2))),
+    h("p", {}, h("a", { href: `#/grade/${encodeURIComponent(g.source)}/${encodeURIComponent(g.id)}/data` }, "All data →")),
   ];
 }
 
 async function viewSearch(params) {
   const q = params.get("q") || "";
   const kind = params.get("kind") || "";
-  const input = h("input", { type: "search", value: q, size: 40, placeholder: "title or course name", autofocus: true });
+  const input = h("input", { type: "text", value: q, size: 40, placeholder: "title or course name", autofocus: true });
   const kindSel = h("select", {}, ["", "assignment", "quiz", "question", "material", "announcement"].map((k) => h("option", { value: k, selected: k === kind }, k ? label(k) : "Anything")));
   const form = h("form", { onsubmit: (e) => {
     e.preventDefault();
@@ -552,25 +535,6 @@ const copyButton = (text, title = "Copy") => h("button", {
   onclick: async (e) => { await navigator.clipboard.writeText(await text()); e.target.textContent = "Copied"; },
 }, title);
 
-// A failed run's log: its error, the trail of everything it did, and the traceback.
-// Fetched when opened, since it can run to thousands of lines.
-const runLog = (runId) => {
-  const pre = h("pre");
-  const fetchLog = async () => (await api(`/runs/${runId}`)).log;
-  const box = h("details", {
-    ontoggle: () => box.open && !pre.textContent && fetchLog().then((log) => { pre.textContent = log; }, (e) => { pre.textContent = e.message; }),
-  }, h("summary", {}, "log"), h("p", {}, copyButton(fetchLog, "Copy log")), pre);
-  return box;
-};
-
-// `command` is a source's login_command: shown under the error when a sign-in needs a hand.
-// `runId` is set when the run kept a log.
-const failure = (error, command, runId) => h("span", {}, h("strong", {}, "Failed"), error ? h("details", {}, h("summary", {}, "error"), h("pre", {}, error),
-  command ? [h("p", {}, "The sign-in needs finishing by hand. From your lifeapi checkout, run this, then sign in in the window that opens:"),
-    h("pre", {}, h("code", {}, command)),
-    copyButton(async () => command, "Copy command")] : null) : null,
-  runId != null ? runLog(runId) : null);
-
 // Minutes as "30 min", "2 h", "1 day 6 h".
 function duration(mins) {
   const d = Math.floor(mins / 1440), hrs = Math.floor((mins % 1440) / 60), m = mins % 60;
@@ -579,6 +543,7 @@ function duration(mins) {
 const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? "th" : { 1: "st", 2: "nd", 3: "rd" }[n % 10] || "th");
 // A source's partial fetch, by its description (e.g. "Overall GPA only").
 const partialText = (s, name) => s.partials.find((p) => p.name === name)?.description ?? name;
+const sourceHref = (name) => `#/source/${encodeURIComponent(name)}`;
 
 function scheduleText(s) {
   const sc = s.schedule;
@@ -587,23 +552,31 @@ function scheduleText(s) {
     + (sc.default ? " (default)" : "");
 }
 
+// A whole number of at least `min` typed into a text field (HTML 4.0 has no type=number), or null.
+function wholeNumber(input, min) {
+  const n = Number(input.value.trim());
+  return Number.isInteger(n) && n >= min ? n : null;
+}
+
 // A source's schedule editor. `save` gets the PUT or DELETE request's promise.
 function scheduleForm(s, save) {
   const sc = s.schedule;
   const path = `/sources/${encodeURIComponent(s.source)}/schedule`;
-  const interval = h("input", { type: "number", min: 5, step: 1, required: true, value: sc.interval_minutes });
+  const interval = h("input", { type: "text", size: 5, value: sc.interval_minutes });
   const partial = h("select", {}, h("option", { value: "" }, "everything"),
     s.partials.map((p) => h("option", { value: p.name, selected: p.name === sc.partial }, p.description)));
-  // Disabled while hidden, so the browser doesn't validate a field you can't see.
-  const fullEvery = h("input", { type: "number", min: 2, step: 1, required: true, value: sc.full_every ?? 4, disabled: !sc.partial });
+  const fullEvery = h("input", { type: "text", size: 3, value: sc.full_every ?? 4, disabled: !sc.partial });
   const fullLine = h("p", { hidden: !sc.partial }, "and everything once every ", fullEvery, " fetches");
   partial.addEventListener("change", () => { fullLine.hidden = fullEvery.disabled = !partial.value; });
   return h("form", { onsubmit: (e) => {
     e.preventDefault();
+    const mins = wholeNumber(interval, 5), every = wholeNumber(fullEvery, 2);
+    if (mins == null) return alert("The interval is a whole number of minutes, 5 or more.");
+    if (partial.value && every == null) return alert("“Everything once every” takes a whole number, 2 or more.");
     save(api(path, {}, { method: "PUT", json: {
-      interval_minutes: Number(interval.value),
+      interval_minutes: mins,
       partial: partial.value || null,
-      full_every: partial.value ? Number(fullEvery.value) : null,
+      full_every: partial.value ? every : null,
     } }));
   } },
     h("p", {}, "Every ", interval, " minutes", s.partials.length ? [", fetch ", partial] : null),
@@ -627,8 +600,17 @@ function browserForm(s, save) {
       h("button", { type: "button", disabled: s.browser.default, onclick: () => save(api(path, {}, { method: "DELETE" })) }, "Reset to default")));
 }
 
+// A run's result in a few words. A failure links to its source's page, which has the error.
+function runResult(s) {
+  const r = s.last_run;
+  if (!r) return "never run";
+  if (r.ok == null) return r.finished_at ? "?" : "running…";
+  return r.ok ? "OK" : [h("strong", {}, "Failed"), " ", h("a", { href: sourceHref(s.source) }, "why →")];
+}
+
 // Fills in and re-renders its own box (every 5 s while a sync is queued or running) rather
-// than going through route(), so there's no "Loading…" flash.
+// than going through route(), so there's no "Loading…" flash. Settings are changed on each
+// source's own page, so a re-render never wipes an edit.
 async function viewStatus() {
   const box = h("div");
   let timer;
@@ -638,13 +620,6 @@ async function viewStatus() {
     catch (e) { alert(`Couldn't request a sync: ${e.message}`); }
     render();
   }
-
-  // `what` names the setting in the error ("schedule", "browser").
-  const saveSetting = (what) => async (request) => {
-    try { await request; }
-    catch (e) { alert(`Couldn't change the ${what}: ${e.message}`); return; } // leaves the form as it was
-    render();
-  };
 
   async function clear() {
     if (!confirm("Clear the sync request list? Queued requests are cancelled; running ones stay.")) return;
@@ -665,18 +640,15 @@ async function viewStatus() {
         h("tr", {}, ["Source", "Schedule", "Browser", "Next fetch", "Last run", "Result", "Courses", "Items", "Grades", "Last full success", ""].map((x) => h("th", {}, x))),
         sources.map((s) => {
           const r = s.last_run, sc = s.schedule;
-          const result = !r ? "never run" : r.ok == null ? (r.finished_at ? "?" : "running…") : r.ok ? "OK" : failure(r.error, s.login_command, r.has_log ? r.run_id : null);
           const state = activeFor(s.source);
           return h("tr", {},
-            h("td", {}, sourceName(s.source), s.enabled ? null : h("small", {}, " (disabled)")),
-            h("td", {}, scheduleText(s),
-              h("details", { "data-edit": "" }, h("summary", {}, "change"), scheduleForm(s, saveSetting("schedule")))),
-            h("td", {}, browserText(s),
-              h("details", { "data-edit": "" }, h("summary", {}, "change"), browserForm(s, saveSetting("browser")))),
+            h("td", {}, h("a", { href: sourceHref(s.source) }, sourceName(s.source)), s.enabled ? null : h("small", {}, " (disabled)")),
+            h("td", {}, scheduleText(s)),
+            h("td", {}, browserText(s)),
             h("td", {}, !sc.next_fetch_at ? "—" : new Date(sc.next_fetch_at) <= new Date() ? "due now" : when(sc.next_fetch_at),
               sc.next_fetch_partial ? h("small", {}, ` (${partialText(s, sc.next_fetch_partial)})`) : null),
             h("td", {}, r ? when(r.started_at) : ""),
-            h("td", {}, result, r?.partial ? h("small", {}, ` (${partialText(s, r.partial)})`) : null),
+            h("td", {}, runResult(s), r?.partial ? h("small", {}, ` (${partialText(s, r.partial)})`) : null),
             h("td", {}, r?.counts.courses ?? ""), h("td", {}, r?.counts.items ?? ""), h("td", {}, r?.counts.grades ?? ""),
             h("td", {}, s.last_success_at ? when(s.last_success_at) : "never"),
             h("td", {}, state === "running" ? "Syncing…" : state === "pending" ? "Queued"
@@ -689,23 +661,71 @@ async function viewStatus() {
         requests.map((r) => h("tr", {},
           h("td", {}, when(r.requested_at)),
           h("td", {}, r.sources ? r.sources.map(sourceName).join(", ") : "All sources"),
-          h("td", {}, r.status === "failed" ? failure(r.error) : r.status === "running" ? "Running…" : label(r.status)),
+          h("td", {}, r.status === "failed" ? [h("strong", {}, "Failed"), r.error ? [h("br"), h("small", {}, r.error)] : null]
+            : r.status === "running" ? "Running…" : label(r.status)),
           h("td", {}, when(r.finished_at)))))
         : h("p", {}, h("em", {}, "None yet.")),
       active.length ? h("p", {}, h("small", {}, "Refreshing while a sync is queued or running.")) : null,
     ].filter((x) => x != null));
-    function tick() {
-      if (!box.isConnected) return; // navigated away
-      if (box.querySelector("details[data-edit][open]")) timer = setTimeout(tick, 5000); // don't wipe an edit
-      else render().catch(() => {});
-    }
-    if (active.length) timer = setTimeout(tick, 5000);
+    if (active.length) timer = setTimeout(() => box.isConnected && render().catch(() => {}), 5000);
   }
 
   await render(); // errors on the first load go to route()'s "Couldn't load"
   return [h("h1", {}, "Sync status"),
-    h("p", {}, h("small", {}, "Each source is fetched on its schedule. A partial fetch reads only part of a source (like Infinite Campus's GPA); a sync is always a full fetch. A headed browser is a visible one, which gets past some sites' bot checks.")),
+    h("p", {}, h("small", {}, "Each source is fetched on its schedule. A partial fetch reads only part of a source (like Infinite Campus's GPA); a sync is always a full fetch. A headed browser is a visible one, which gets past some sites' bot checks. Each source's settings are on its own page.")),
     box];
+}
+
+// One source: its last run (with the error, if it failed) and its settings.
+async function viewSource(name) {
+  const s = (await api("/sources")).find((x) => x.source === name);
+  if (!s) throw new Error(`There's no source called ${name}`);
+  const r = s.last_run;
+  // Sends a request (a sync, or a settings change), then redraws this page.
+  const act = (what) => async (request) => {
+    try { await request; }
+    catch (e) { alert(`Couldn't ${what}: ${e.message}`); return; } // leaves the form as it was
+    route();
+  };
+  return [
+    h("p", {}, h("a", { href: "#/status" }, "← Sync status")),
+    h("h1", {}, sourceName(s.source)),
+    standfirst(scheduleText(s), " · ", browserText(s), s.enabled ? "" : " · disabled"),
+    h("p", {}, h("button", { onclick: () => act("request a sync")(api("/sync", { source: s.source }, { method: "POST" })) }, "Sync now")),
+    h("h2", {}, "Last run"),
+    r ? h("dl", {},
+      h("dt", {}, "Started"), h("dd", {}, fullDate(r.started_at), " (", relative(r.started_at), ")"),
+      h("dt", {}, "Finished"), h("dd", {}, r.finished_at ? fullDate(r.finished_at) : "not yet"),
+      h("dt", {}, "Result"), h("dd", {}, r.ok === false ? h("strong", {}, "Failed") : runResult(s),
+        r.partial ? ` (${partialText(s, r.partial)})` : ""),
+      h("dt", {}, "Saved"), h("dd", {}, `${r.counts.courses ?? 0} courses · ${r.counts.items ?? 0} items · ${r.counts.grades ?? 0} grades`),
+      h("dt", {}, "Last full success"), h("dd", {}, s.last_success_at ? [fullDate(s.last_success_at), " (", relative(s.last_success_at), ")"] : "never"))
+      : h("p", {}, h("em", {}, "Never run.")),
+    r?.ok === false ? [
+      h("h2", {}, "Error"),
+      h("pre", {}, wrapLines(r.error || "(no message)")),
+      s.login_command ? [
+        h("p", {}, "The sign-in needs finishing by hand. From your lifeapi checkout, run this, then sign in in the window that opens:"),
+        h("pre", {}, h("code", {}, s.login_command)),
+        h("p", {}, copyButton(async () => s.login_command, "Copy command"))] : null,
+      r.has_log ? h("p", {}, h("a", { href: `#/run/${r.run_id}` }, "The run's full log →")) : null,
+    ] : null,
+    h("h2", {}, "Schedule"), scheduleForm(s, act("change the schedule")),
+    h("h2", {}, "Browser"), browserForm(s, act("change the browser")),
+  ];
+}
+
+// A failed run's log: its error, the trail of everything it did, and the traceback.
+async function viewRun(id) {
+  const run = await api(`/runs/${id}`);
+  return [
+    h("p", {}, h("a", { href: sourceHref(run.source) }, `← ${sourceName(run.source)}`)),
+    h("h1", {}, `Run ${id}`),
+    standfirst(sourceName(run.source), " · ", fullDate(run.started_at), " · ",
+      run.ok ? "OK" : run.ok === false ? h("strong", {}, "Failed") : "running"),
+    run.log ? [h("p", {}, copyButton(async () => run.log, "Copy log")), h("pre", {}, wrapLines(run.log))]
+      : h("p", {}, h("em", {}, "This run kept no log.")),
+  ];
 }
 
 // ---------- link resolver: <this site>/<any source URL> → the matching page ----------
@@ -796,7 +816,7 @@ async function resolveLink(u) {
 }
 
 function linkForm(value = "") {
-  const input = h("input", { type: "url", value, size: 60, placeholder: "https://classroom.google.com/u/1/c/…/a/…/details" });
+  const input = h("input", { type: "text", value, size: 60, placeholder: "https://classroom.google.com/u/1/c/…/a/…/details" });
   return h("form", { onsubmit: (e) => { e.preventDefault(); location.hash = "#/open?url=" + encodeURIComponent(input.value); } },
     input, " ", h("button", {}, "Open"));
 }
@@ -839,6 +859,37 @@ const CSS1_KEYWORDS = {
 const CSS1_UNITS = ["px", "pt", "pc", "in", "cm", "mm", "em", "ex", "%"];
 // Rule 5: CSS1's generic families are the only fonts the sheet may ask for.
 const GENERIC_FAMILIES = ["serif", "sans-serif", "cursive", "fantasy", "monospace"];
+// Rule 6: HTML 4.0 Transitional's elements and input types. FONT and BASEFONT are left out:
+// styling is the style sheet's job.
+const HTML40 = `a abbr acronym address applet area b base bdo big blockquote body br button caption center
+  cite code col colgroup dd del dfn dir div dl dt em fieldset form h1 h2 h3 h4 h5 h6 head hr html i iframe
+  img input ins isindex kbd label legend li link map menu meta noscript object ol optgroup option p param pre
+  q s samp script select small span strike strong style sub sup table tbody td textarea tfoot th thead title
+  tr tt u ul var`.split(/\s+/);
+const HTML40_INPUTS = ["text", "password", "checkbox", "radio", "submit", "reset", "file", "hidden", "image", "button"];
+// Rule 7: lengths are relative to the reader's font size.
+const ABSOLUTE_UNITS = ["px", "pt", "pc", "in", "cm", "mm"];
+// Rule 8: the minified rules fit on one 80x24 terminal screen.
+const SCREEN_BYTES = 80 * 24;
+const minify = (css) => css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ")
+  .replace(/\s*([{};:,])\s*/g, "$1").replace(/;}/g, "}").trim();
+
+// Rules 3 and 6 against the live page: every element, as the browser holds it right now.
+function checkMarkup(root = document.documentElement) {
+  const problems = [], kinds = new Set();
+  const elements = [root, ...root.querySelectorAll("*")];
+  for (const el of elements) {
+    const tag = el.tagName.toLowerCase();
+    kinds.add(tag);
+    if (tag === "font" || tag === "basefont") problems.push([`<${tag}>`, "rule 6: HTML 4.0 has it, but styling is the style sheet's job"]);
+    else if (!HTML40.includes(tag)) problems.push([`<${tag}>`, "rule 6: not an HTML 4.0 element"]);
+    const type = tag === "input" && (el.getAttribute("type") || "text").toLowerCase();
+    if (type && !HTML40_INPUTS.includes(type)) problems.push([`<input type=${type}>`, "rule 6: not an HTML 4.0 input type"]);
+    if (el.hasAttribute("class")) problems.push([`class on <${tag}>`, "rule 3: no classes"]);
+    if (el.getAttribute("style")?.trim()) problems.push([`style on <${tag}>`, "an inline style goes around the style sheet"]);
+  }
+  return { problems: [...new Map(problems.map((p) => [p[0], p])).values()], kinds, count: elements.length };
+}
 // Faces a browser might use for sans-serif, most likely first (Helvetica before Arial: Arial
 // copies Helvetica's widths, so they're told apart by drawing them).
 const SANS_FACES = ["Helvetica", "Arial", "Helvetica Neue", "Liberation Sans", "DejaVu Sans", "Noto Sans", "Roboto",
@@ -925,6 +976,7 @@ function declarationProblem({ prop, value }) {
   for (const c of colours) if (!PALETTE[hex6(c)]) return `rule 2: ${c} isn't one of the browser's own colours`;
   for (const [, , unit] of v.replace(/#[0-9a-f]+/gi, "").matchAll(/(-?\d*\.?\d+)([a-z%]*)/gi)) {
     if (unit && !CSS1_UNITS.includes(unit.toLowerCase())) return `${unit} isn't a CSS1 unit`;
+    if (ABSOLUTE_UNITS.includes(unit.toLowerCase())) return `rule 7: ${unit} is absolute; lengths here are em, ex and %`;
   }
   const allowed = CSS1_KEYWORDS[prop]?.split(" ");
   const bad = allowed && v.split(/\s+/).find((t) => !allowed.includes(t.toLowerCase()));
@@ -946,20 +998,26 @@ function checkSheet(css) {
       for (const c of d.value.match(/#[0-9a-f]{3,6}\b|\b[a-z]+\b/gi) ?? []) if (PALETTE[hex6(c)]) colours.add(hex6(c));
     }
   }
-  const lines = css.trim().split("\n").length;
-  return { problems, used, colours, rules: rules.length, declarations: rules.reduce((n, r) => n + r.decls.length, 0), lines };
+  const minified = minify(css);
+  const bytes = new TextEncoder().encode(minified).length;
+  if (bytes > SCREEN_BYTES) problems.push(["the style sheet", `rule 8: ${bytes} bytes minified, ${bytes - SCREEN_BYTES} more than an 80×24 screen holds`]);
+  return { problems, used, colours, minified, bytes, rules: rules.length, declarations: rules.reduce((n, r) => n + r.decls.length, 0) };
 }
 
 function viewColophon() {
   const css = $("style").textContent;
   const c = checkSheet(css);
+  const markup = checkMarkup();
+  const problems = [...c.problems, ...markup.problems];
   const sep = (list) => list.flatMap((x, i) => (i ? [", ", x] : [x]));
   const undeclared = Object.keys(PALETTE).filter((x) => !c.colours.has(x));
   const face = resolveFamily("sans-serif", SANS_FACES);
+  // The minified rules as a terminal shows them: 80 columns, then vi's tildes down to line 24.
+  const screen = c.minified.match(/.{1,80}/g) ?? [];
+  const tildes = Array(Math.max(0, 24 - screen.length)).fill("~");
   return [
-    h("hgroup", {},
-      h("h1", {}, "Colophon"),
-      h("p", {}, "This explorer is set in International Style Sheets, Level 1: the Swiss style, taken as far as CSS1 could take it in December 1996, and not a step further.")),
+    h("h1", {}, "Colophon"),
+    standfirst("This explorer is set in International Style Sheets, Level 1: the Swiss style, taken as far as CSS1 and HTML 4.0 could take it in 1997, and not a step further."),
     h("h2", {}, "The rules"),
     h("ol", {},
       h("li", {}, "CSS Level 1 only: its ", CSS1_PROPERTIES.length, " properties, its units and its selectors. Nothing from CSS2 or later, so no grid, flexbox, positioning, media queries, :hover, web fonts, max-width or overflow."),
@@ -968,40 +1026,55 @@ function viewColophon() {
         h("a", { href: "#/colophon" }, "visited purple"), ", and ", h("strong", {}, "the red a link turns while you click it"), ", borrowed for anything urgent."),
       h("li", {}, "Element names only. The markup has no classes, so the style sheet can style h1, dt and blockquote, but never .anything."),
       h("li", {}, "The style sheet has to be optional. Turn it off (the button at the bottom of every page) and each page still reads as plain HTML."),
-      h("li", {}, "Generic font families only: serif, sans-serif, monospace, cursive or fantasy, never a font's name. The style sheet asks for sans-serif, and your browser decides what that means.")),
+      h("li", {}, "Generic font families only: serif, sans-serif, monospace, cursive or fantasy, never a font's name. The style sheet asks for sans-serif, and your browser decides what that means."),
+      h("li", {}, "HTML 4.0 elements only (W3C Recommendation, 18 December 1997): no main, nav, article or details, and no search, number or URL fields. No font element either, because styling is the style sheet's job."),
+      h("li", {}, "Relative lengths only: em, ex, % and the keywords thin and medium, never pixels or points. Your browser's font size is the unit, so set it bigger and the whole grid grows with it."),
+      h("li", {}, "The rules fit on one 80×24 terminal screen: 1,920 bytes, minified. Comments are free, which is why the source at the bottom has so many.")),
+    h("h2", {}, "Inspection"),
+    h("p", {}, "Problems found: ", huge(problems.length)),
+    problems.length
+      ? h("table", { border: 1, cellpadding: 4 }, h("tr", {}, h("th", {}, "Where"), h("th", {}, "Why")),
+        problems.map(([where, why]) => h("tr", {}, h("td", {}, h("code", {}, where)), h("td", {}, h("strong", {}, why)))))
+      : h("p", {}, `Checked just now, in your browser: the style sheet's ${c.rules} rules and ${c.declarations} declarations, and the ${markup.count} elements on this page. The footer runs the same check on every page.`),
+    h("dl", {},
+      h("dt", {}, "Properties"),
+      h("dd", {}, `${c.used.size} of ${CSS1_PROPERTIES.length}: `, sep([...c.used].sort((a, b) => b[1] - a[1]).map(([p, n]) => [h("b", {}, p), ` ×${n}`]))),
+      h("dt", {}, "Never needed"),
+      h("dd", {}, sep(CSS1_PROPERTIES.filter((p) => !c.used.has(p)))),
+      h("dt", {}, "Elements"),
+      h("dd", {}, `${markup.kinds.size} of HTML 4.0's ${HTML40.length}, on this page: `, sep([...markup.kinds].sort().map((k) => h("b", {}, k)))),
+      h("dt", {}, "Colours"),
+      h("dd", {}, sep([...c.colours].map((x) => `${x} (${PALETTE[x]})`)),
+        undeclared.length ? ["; and, never declared, the browser's own ", sep(undeclared.map((x) => `${x} (${PALETTE[x]})`))] : null),
+      h("dt", {}, "Rendering"),
+      h("dd", {}, document.compatMode === "BackCompat"
+        ? "Quirks mode. The doctype says HTML 4.0 Transitional, so your browser lays this page out the way it did pages from the 1990s."
+        : "Standards mode.")),
     h("h2", {}, "The face"),
-    h("p", {}, "On this computer, sans-serif is: ", num(face ?? "?", face ?? "unknown")),
+    h("p", {}, "On this computer, sans-serif is: ", huge(face ?? "unknown")),
     h("p", {}, face === "Helvetica"
       ? "The Swiss typeface is what a Mac gives you for not asking. On Windows the same style sheet gets Arial, which copies Helvetica's widths and not much else; on Linux it's usually DejaVu Sans or Liberation Sans."
       : face
         ? `Not Helvetica. On a Mac the same style sheet gets Helvetica, and on Windows Arial. Here the Swiss style is set in ${face}, because that's what this browser means by sans-serif.`
         : "Not any of the usual faces, so the browser (or you, in its font settings) chose something else."),
-    h("h2", {}, "Inspection"),
-    h("p", {}, "Problems found: ", num(c.problems.length)),
-    c.problems.length
-      ? h("table", { border: 1, cellpadding: 4 }, h("tr", {}, h("th", {}, "Where"), h("th", {}, "Why")),
-        c.problems.map(([where, why]) => h("tr", {}, h("td", {}, h("code", {}, where)), h("td", {}, h("strong", {}, why)))))
-      : h("p", {}, `Checked just now, in your browser, against the style sheet in this page: ${c.rules} rules, ${c.declarations} declarations, ${c.lines} lines.`),
-    h("dl", {},
-      h("dt", {}, `Uses ${c.used.size} of ${CSS1_PROPERTIES.length} properties`),
-      h("dd", {}, sep([...c.used].sort((a, b) => b[1] - a[1]).map(([p, n]) => [h("b", {}, p), ` ×${n}`]))),
-      h("dt", {}, "Never needed"),
-      h("dd", {}, sep(CSS1_PROPERTIES.filter((p) => !c.used.has(p)))),
-      h("dt", {}, "Colours"),
-      h("dd", {}, sep([...c.colours].map((x) => `${x} (${PALETTE[x]})`)),
-        undeclared.length ? ["; and, never declared, the browser's own ", sep(undeclared.map((x) => `${x} (${PALETTE[x]})`))] : null)),
+    h("h2", {}, "The screen"),
+    h("p", {}, `The rules, minified, on an 80×24 terminal: ${c.bytes.toLocaleString()} of ${SCREEN_BYTES.toLocaleString()} bytes, ${screen.length} of 24 lines.`),
+    h("pre", {}, [...screen, ...tildes].join("\n")),
     h("h2", {}, "What stayed default"),
     h("ul", {},
       h("li", {}, "Links are the browser's: blue, underlined, purple once visited. There's no :hover in CSS1, so nothing happens under the pointer."),
-      h("li", {}, "Rules break at every table column. Borders can't collapse until CSS2, so the 2 pixels the browser leaves between cells cut each rule into pieces."),
-      h("li", {}, "Headlines don't scale with the window. Without viewport units or media queries they're a fixed size, and on a phone they wrap or run off the edge."),
+      h("li", {}, "Rules break at every table column. Borders can't collapse until CSS2, so the space the browser leaves between cells cuts each rule into pieces."),
+      h("li", {}, "Headlines grow with your font size but not with the window. Without viewport units or media queries, on a phone they wrap or run off the edge."),
       h("li", {}, "Punctuation stays. CSS1 can't add or remove text, so the separators written for the plain page (the | between menu items, the · between facts, the colon in \"GPA:\") show in the styled one too."),
-      h("li", {}, "Buttons, fields, menus and disclosure triangles belong to the operating system, as they did in 1996."),
+      h("li", {}, "Nothing folds away. HTML 4.0 has no <details>, so a source's settings, a run's log and a record's raw data each got a page of their own, the 1997 way."),
+      h("li", {}, "The header is a <center>, so with the style sheet off it's centred, like every home page of 1997. The style sheet pulls it left."),
+      h("li", {}, "The footer is an <address>, so it's in italics either way."),
+      h("li", {}, "Buttons, fields and menus belong to the operating system, as they did in 1997."),
       h("li", {}, "The typeface is the browser's default sans-serif, chosen in its settings, not by this page."),
-      h("li", {}, "Preformatted text runs off the edge, because overflow is CSS2."),
+      h("li", {}, "Preformatted text is broken at 100 columns by the page itself, the way you'd hard-wrap an email, because pre-wrap and overflow are CSS2. Where there's a copy button, the copy is exact."),
       h("li", {}, "The grid is floats and negative margins: content in the right three quarters, labels hung into the left quarter."),
       h("li", {}, "The bullets survived. They're squares now.")),
-    h("h2", {}, "The style sheet"),
+    h("h2", {}, "The source"),
     h("pre", {}, css.trim()),
   ];
 }
@@ -1016,6 +1089,10 @@ const routes = [
   [/^\/courses$/, viewCourses],
   [/^\/course\/([^/]+)\/([^/]+)$/, viewCourse],
   [/^\/item\/([^/]+)\/([^/]+)$/, viewItem],
+  [/^\/item\/([^/]+)\/([^/]+)\/data$/, (source, id) => viewData("item", source, id)],
+  [/^\/grade\/([^/]+)\/([^/]+)\/data$/, (source, id) => viewData("grade", source, id)],
+  [/^\/source\/([^/]+)$/, viewSource],
+  [/^\/run\/(\d+)$/, viewRun],
   [/^\/grades$/, viewGrades],
   [/^\/grade\/([^/]+)\/([^/]+)$/, viewGrade],
   [/^\/search$/, viewSearch],
@@ -1027,14 +1104,27 @@ const routes = [
 const NAV = [["#/", "Today"], ["#/upcoming", "Upcoming"], ["#/missing", "Missing"], ["#/announcements", "Announcements"],
   ["#/courses", "Courses"], ["#/grades", "Grades"], ["#/search", "Search"], ["#/status", "Sync status"]];
 
-// The current section is plain bold text rather than a link to itself: "you are here" in both
-// modes, since CSS1 can't select a link by its aria-current.
+// The current section is an <em>, not a link to itself: italic on the plain page, upright and
+// bold (like the rest of the header) on the styled one.
 function renderNav(path) {
   const top = path.split("/")[1];
-  const section = { course: "courses", grade: "grades" }[top] ?? top;
-  $("header nav").replaceChildren(...NAV.flatMap(([href, name], i) => [i ? " | " : null,
-    href.slice(2) === section ? h("b", { "aria-current": "page" }, name) : h("a", { href }, name)]).filter((x) => x != null));
+  const section = { course: "courses", grade: "grades", source: "status", run: "status" }[top] ?? top;
+  $("center").replaceChildren(h("b", {}, "lifeapi"), " ", ...NAV.flatMap(([href, name], i) => [i ? " | " : null,
+    href.slice(2) === section ? h("em", { "aria-current": "page" }, name) : h("a", { href }, name)]).filter((x) => x != null));
 }
+
+// The footer's badge, like the "Valid HTML 4.0!" buttons of 1998, but checked live: it re-runs
+// the colophon's checks whenever the page changes.
+const badge = $("#badge");
+function updateBadge() {
+  const problems = [...checkSheet($("style").textContent).problems, ...checkMarkup().problems];
+  badge.replaceChildren(problems.length
+    ? h("strong", {}, `breaks the rules: ${problems[0][0]}${problems.length > 1 ? ` and ${problems.length - 1} more` : ""}`)
+    : "HTML 4.0 + CSS1 ✓");
+}
+let badgeTimer;
+new MutationObserver(() => { clearTimeout(badgeTimer); badgeTimer = setTimeout(updateBadge, 200); })
+  .observe($("#main"), { childList: true, subtree: true });
 
 // The style sheet can be switched off, to show the plain page underneath.
 const styleToggle = $("#style-toggle");
