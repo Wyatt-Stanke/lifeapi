@@ -136,6 +136,13 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   rows unless `include_inactive=true`. The API imports the scraper's `REGISTRY` (to
   validate sync requests and list never-run sources in `/sources`), but never opens a
   browser.
+- The OpenAPI spec (`/openapi.json`) is meant to be handed to a person or agent on its own,
+  so it's the API's documentation. The overview (common questions, sources, ids, statuses,
+  time zones) is `DESCRIPTION` in `api/schemas.py`. Field docs are the `Field(description=)`s
+  in `models.py`. Response models are in `api/schemas.py`; they're validated on output, so a
+  stored row that no longer fits its model becomes a 500. When you add a source, status,
+  `extra` key or endpoint, update those docs. `DONE_STATUSES` there is the finished-status
+  list that `/items/upcoming` uses.
 
 ### Finishing a sign-in by hand
 
