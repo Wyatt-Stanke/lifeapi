@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import AsyncIterator, Callable
 
 from patchright.async_api import BrowserContext, ElementHandle, Locator, Page, async_playwright
+from patchright.async_api import Error as PlaywrightError
 from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from .. import config
@@ -142,6 +143,27 @@ async def wait_until(
         for t in pending:
             t.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def wait_for_url(page: Page, url: str | Callable[[str], bool], timeout: int | None = None) -> None:
+    """`page.wait_for_url`, but not thrown off by a navigation that's aborted on the way.
+
+    Playwright rejects on any failed navigation, including one the site cancels itself
+    before redirecting elsewhere: AP Classroom does that on the way to the College Board
+    sign-in, and the wait failed with `net::ERR_ABORTED` on a page that was fine. This keeps
+    waiting until `url` matches or `timeout` runs out.
+    """
+    timeout = timeout if timeout is not None else config.timeout(30_000)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout / 1000
+    while True:
+        try:
+            # At least 1 ms: a timeout of 0 means no timeout at all.
+            return await page.wait_for_url(url, timeout=max((deadline - loop.time()) * 1000, 1))
+        except PlaywrightError as e:
+            if isinstance(e, PlaywrightTimeoutError) or page.is_closed() or "net::ERR_ABORTED" not in str(e):
+                raise
+            log.debug("A navigation was aborted (%s); still waiting for the URL", str(e).splitlines()[0])
 
 
 async def wait_gone(control: ElementHandle) -> bool:

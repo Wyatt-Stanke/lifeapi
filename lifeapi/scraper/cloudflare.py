@@ -17,6 +17,7 @@ import os
 import shutil
 from urllib.parse import urlsplit
 
+from patchright.async_api import Error as PlaywrightError
 from patchright.async_api import Locator, Page
 
 from .. import config
@@ -68,11 +69,20 @@ async def pass_challenge(page: Page) -> None:
                 log.info("Cloudflare challenge on %s cleared%s", host,
                          f" after {clicks} click(s)" if clicks else "")
                 return
-            if cleared in done or shown.exception() or clicks >= MAX_CLICKS:
+            if cleared in done or clicks >= MAX_CLICKS:
+                break
+            if shown.exception():
+                if _widget_gone(page, shown.exception()):
+                    continue
                 break
             clicks += 1
             log.info("Clicking Turnstile's checkbox (%d of %d)", clicks, MAX_CLICKS)
-            await _click(page, checkbox)
+            try:
+                await _click(page, checkbox, timeout=max(deadline - loop.time(), 0.1) * 1000)
+            except PlaywrightError as e:
+                if not _widget_gone(page, e):
+                    raise
+                continue
             # It turns into a spinner, then the page reloads. If it comes back, it's asking again.
             try:
                 await checkbox.wait_for(state="hidden", timeout=config.timeout(10_000))
@@ -92,11 +102,23 @@ async def pass_challenge(page: Page) -> None:
     )
 
 
-async def _click(page: Page, checkbox: Locator) -> None:
+def _widget_gone(page: Page, error: BaseException) -> bool:
+    """Whether `error` (from waiting for or clicking the checkbox) means only that Turnstile
+    replaced its widget. It does that when it resets, and its iframe is out of process, so
+    a call in flight on the old one fails with TargetClosedError although the page is fine.
+    The caller then looks for the checkbox again."""
+    # patchright exports TargetClosedError only from its private _impl package.
+    if page.is_closed() or type(error).__name__ != "TargetClosedError":
+        return False
+    log.info("Turnstile's widget went away mid-call (%s); looking for it again", str(error).splitlines()[0])
+    return True
+
+
+async def _click(page: Page, checkbox: Locator, timeout: float) -> None:
     """Click the checkbox. On an X display (the container's virtual one), as a real pointer
     event through xdotool, which reaches Chrome the way a person's click does. Otherwise,
     and if that fails, with a click sent over CDP."""
-    box = await checkbox.bounding_box()
+    box = await checkbox.bounding_box(timeout=timeout)
     if box and os.environ.get("DISPLAY") and shutil.which("xdotool"):
         # bounding_box() is relative to the top-level viewport; the viewport's top-left
         # on screen is the window's position plus the toolbar above it.
@@ -111,4 +133,4 @@ async def _click(page: Page, checkbox: Locator) -> None:
         if proc.returncode == 0:
             return
         log.warning("xdotool click failed (%s); clicking over CDP", err.decode().strip())
-    await checkbox.click()
+    await checkbox.click(timeout=timeout)
