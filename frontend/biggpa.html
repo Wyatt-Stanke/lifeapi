@@ -81,7 +81,8 @@ async function load() {
   try {
     const res = await fetch("/api/gpa");
     if (!res.ok) return fail(ERRORS[res.status] || `Error ${res.status}`);
-    show(new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(await res.json()), "Percent");
+    // Always three places, as Infinite Campus publishes it (99.150, not 99.15).
+    show(new Intl.NumberFormat("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 }).format(await res.json()), "Percent");
     shown = true;
   } catch {
     fail("API unreachable");

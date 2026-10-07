@@ -17,7 +17,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .. import config, storage
-from ..models import ItemKind
+from ..models import GPA_PLACES, ItemKind
 from ..scraper import sources as _sources  # noqa: F401  (registers all sources)
 from ..scraper.base import REGISTRY
 from .schemas import (
@@ -437,17 +437,19 @@ def grades(
     return [storage.row_to_dict(r) for r in conn.execute(sql, args)]
 
 
-@app.get("/gpa", tags=["grades"], operation_id="getGpa",
+@app.get("/gpa", tags=["grades"], operation_id="getGpa", response_model=float,
          summary="Get the overall GPA as a percentage",
          responses={404: {"model": Error, "description": "No GPA has been scraped yet."},
                     **errors(503)})
-def gpa(conn: sqlite3.Connection = Depends(db)) -> float:
-    """The overall GPA as a bare JSON number, e.g. `99.15`. This school's GPA is already a
-    percentage (as Infinite Campus shows it), so the value is the GPA as published. It's
-    weighted, so honors and AP courses can lift it above 100. When several GPA records
-    exist, this is the cumulative weighted one. 404 until a GPA has been scraped. Needs no
-    token, so a display like the explorer's `/biggpa` page works on any device. Every GPA
-    record (term, unweighted, rank) is in `GET /grades`, with `gpa` set, behind the token."""
+def gpa(conn: sqlite3.Connection = Depends(db)) -> Response:
+    """The overall GPA as a bare JSON number, always written with three decimal places, e.g.
+    `99.150`. A JSON parser reads that as `99.15`, so pad it to three places again to show
+    it. This school's GPA is already a percentage (as Infinite Campus shows it, to three
+    places), so the value is the GPA as published. It's weighted, so honors and AP courses
+    can lift it above 100. When several GPA records exist, this is the cumulative weighted
+    one. 404 until a GPA has been scraped. Needs no token, so a display like the explorer's
+    `/biggpa` page works on any device. Every GPA record (term, unweighted, rank) is in
+    `GET /grades`, with `gpa` set, behind the token."""
     rows = conn.execute(
         "SELECT * FROM grades WHERE active=1 AND json_extract(data, '$.gpa') IS NOT NULL"
     )
@@ -457,4 +459,5 @@ def gpa(conn: sqlite3.Connection = Depends(db)) -> float:
     best = max(records, key=lambda g: (g["extra"].get("type") == "cumulative",
                                        g["extra"].get("weighted", True),
                                        g["extra"].get("calendar_id") or 0))
-    return best["gpa"]
+    # Written by hand: serializing the float would drop trailing zeros (99.150 -> 99.15).
+    return Response(f"{best['gpa']:.{GPA_PLACES}f}", media_type="application/json")

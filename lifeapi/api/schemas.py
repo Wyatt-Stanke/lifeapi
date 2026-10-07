@@ -150,7 +150,7 @@ it finds; this API serves the saved copy. It never contacts the platforms itself
 | What's overdue? | `GET /items/missing` |
 | Any new announcements? | `GET /announcements?days=3` |
 | How am I doing in my classes? | `GET /grades` |
-| What's my GPA? | `GET /gpa` (a bare number, a percentage that can exceed 100) |
+| What's my GPA? | `GET /gpa` (a bare number to three decimal places, a percentage that can exceed 100) |
 | Find a specific assignment | `GET /items?q=essay` |
 | Everything for one class | `GET /courses`, then `GET /items?source=…&course_id=…` |
 | What did I get on X? | `GET /items?q=…` (`score`, `points_possible`), or `GET /grades` (`entries`) |

@@ -229,6 +229,10 @@ Search, Sync status with sync buttons), not an endpoint browser. Raw API access 
 - Infinite Campus produces `Grade` records (one per course × term × grading task), each
   with `GradeEntry` assignment scores, plus one course-less `Grade` per overall GPA
   (`gpa` set, id `gpa:<calendarID>:<type>:<termSeq>:<w|uw>`). It produces no `Item`s.
+- GPAs are published to three decimal places (`models.GPA_PLACES`). Stored as floats, they
+  lose trailing zeros (`99.150` is stored as `99.15`), so anything that turns a GPA into text
+  pads it to three places: `GET /gpa` writes its body by hand, `/biggpa` and the explorer's
+  `gpaText()` format it.
 - `status` keeps each platform's own wording, in snake_case.
 
 ## Exploring a site's structure

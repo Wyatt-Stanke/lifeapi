@@ -161,6 +161,11 @@ class GradeEntry(BaseModel):
     comments: str | None = Field(None, description="Teacher's comment on this score.")
 
 
+# Infinite Campus publishes GPAs to three decimal places (e.g. "99.150"). A JSON number
+# can't keep the trailing zero, so anything that writes a GPA out as text pads it to this.
+GPA_PLACES = 3
+
+
 class Grade(BaseModel):
     """A course grade for one grading task in one term (e.g. "MP1 / MARKING PERIOD"). There is
     one record per course × term × task.
@@ -180,7 +185,10 @@ class Grade(BaseModel):
     percent: float | None = Field(None, description="Grade as a percentage.")
     gpa: float | None = Field(None, description="Set only on overall GPA records (no course), on "
                                                 "the school's own scale (here a percentage, which "
-                                                "weighting can lift above 100).",
+                                                "weighting can lift above 100). Precise to three "
+                                                "decimal places. JSON drops trailing zeros, so "
+                                                "`99.15` here is `99.150`: show it with three "
+                                                "places.",
                               examples=[99.15])
     url: str | None = Field(None, description="Deep link to this grade on the source.")
     categories: list[dict[str, Any]] = Field(

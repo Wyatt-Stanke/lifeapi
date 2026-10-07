@@ -74,6 +74,8 @@ const SOURCE_NAMES = {
 const sourceName = (s) => SOURCE_NAMES[s] || (s || "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 const label = (s) => s ? s.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase()) : "";
 const DONE = new Set(["turned_in", "completed", "graded", "done", "returned", "handed_in"]);
+// GPAs are published to three places; JSON drops the trailing zeros (99.150 arrives as 99.15).
+const gpaText = (n) => n.toFixed(3);
 
 const dayKey = (d) => d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
 const time = (d) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -335,7 +337,7 @@ async function viewGrades(params) {
   const shown = term ? grades.filter((g) => g.term === term) : grades;
   return [
     h("h1", {}, "Grades"),
-    gpas.map((g) => h("p", {}, `${g.course_name}${g.term ? ` (${g.term})` : ""}: `, h("strong", {}, String(g.gpa)),
+    gpas.map((g) => h("p", {}, `${g.course_name}${g.term ? ` (${g.term})` : ""}: `, h("strong", {}, gpaText(g.gpa)),
       g.extra?.weighted === false ? " unweighted" : "", g.extra?.rank != null ? ` · rank ${g.extra.rank}${g.extra.out_of ? ` of ${g.extra.out_of}` : ""}` : "")),
     terms.length > 1 ? h("p", {}, "Term ", h("select", { onchange: (e) => { location.hash = "#/grades" + (e.target.value ? "?term=" + encodeURIComponent(e.target.value) : ""); } },
       h("option", { value: "" }, "All"), terms.map((t) => h("option", { value: t, selected: t === term }, t)))) : null,
@@ -351,7 +353,7 @@ async function viewGrade(source, id) {
     h("h1", {}, g.course_name),
     h("p", {}, [g.term, g.task, g.teacher, sourceName(g.source)].filter(Boolean).join(" · "),
       g.url ? [" · ", h("a", { href: g.url, target: "_blank" }, "open ↗")] : null),
-    h("p", {}, h("strong", {}, `${g.letter || "—"}${g.percent != null ? ` (${g.percent}%)` : ""}`)),
+    h("p", {}, h("strong", {}, g.gpa != null ? `GPA ${gpaText(g.gpa)}` : `${g.letter || "—"}${g.percent != null ? ` (${g.percent}%)` : ""}`)),
     g.categories?.length ? [h("h2", {}, "Categories"), h("table", { border: 1, cellpadding: 4 },
       h("tr", {}, Object.keys(g.categories[0]).map((k) => h("th", {}, label(k)))),
       g.categories.map((c) => h("tr", {}, Object.values(c).map((v) => h("td", {}, typeof v === "object" && v ? JSON.stringify(v) : String(v ?? ""))))))] : null,
