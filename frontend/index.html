@@ -14,96 +14,55 @@
    5. Generic font families only. The sheet asks for sans-serif; the browser picks the face.
    6. HTML 4.0 elements only (W3C Recommendation, 18 December 1997).
    7. Relative lengths only, so the reader's own font size scales the whole design.
-   8. The rules fit on one 80x24 terminal screen: 1,920 bytes, minified. Comments are free.
+   8. 997 bytes, minified: about half an 80x24 terminal screen. Comments are free.
    #/colophon checks this sheet, and the page, against those rules. */
 
-body {
-  margin: 0;
-  padding: 1.5em 4% 3em 4%;
-  background: white;
-  color: black;
-  font-family: sans-serif;
-  line-height: 1.3;
-}
+/* No colours declared: black on white is the browser's, and a border takes its text's colour. */
+body { margin: 1.5em 4%; font-family: sans-serif; line-height: 1.3 }
 
 /* The grid: a label column (the left quarter) and a content column (the rest). The content
    column is the page's one top-level div, and labels hang out of it on negative margins
-   (-33.333% of the column is a quarter of the page): CSS1 has no grid, positioning or
+   (-33.3% of the column is a quarter of the page): CSS1 has no grid, positioning or
    sibling selectors. */
-div { margin: .8em 0 5em 25% }
+div { margin: 0 0 4em 25% }
 div div { margin: 0 }
-address { margin-left: 25%; padding-top: .6em }
+address { margin-left: 25% }
 
 /* The header is a <center>, as in 1997. The sheet un-centres it. */
-center {
-  padding: .5em 0 0 25%;
-  border-top: .75em solid black;
-  text-align: left;
-  font-weight: bold;
-}
-center b { float: left; width: 29.333%; margin-left: -33.333% }
-center em { font-style: normal }
+center { padding: .4em 0 0 25%; border-top: .75em solid; text-align: left }
 
-hr { clear: both; margin: .6em 0 0; border: 0; border-top: thin solid black }
-div hr { margin: 1.2em 0 1.2em -33.333% }
-
-h1 { margin: .45em 0 .3em -33.333%; font-size: 4em; line-height: .95; letter-spacing: -.045em }
-h2 {
-  clear: both;
-  margin: 2.2em 0 .9em -33.333%;
-  padding-top: .3em;
-  border-top: medium solid black;
-  font-size: 1.5em;
-  line-height: 1.1;
-  letter-spacing: -.02em;
-}
-/* Labels are caption-sized, with a line box as tall as the text's, so they sit on its baselines. */
-h3, dt, cite {
+/* Every label, the header's name included, is caption-sized, with a line box as tall as the
+   text's, so it sits on the text's baselines. */
+h3, dt, cite, center b {
   float: left;
   clear: left;
-  width: 29.333%;
-  margin: 0 0 0 -33.333%;
+  width: 29.3%;
+  margin: 0 0 0 -33.3%;
   font-size: .8125em;
-  font-weight: bold;
   line-height: 1.6;
 }
-/* A byline hangs out of its blockquote, which is two thirds of the column. */
-cite { width: 44%; margin-left: -50%; font-style: normal; font-weight: normal }
 
-/* The standfirst is <big>, and a headline number is <big><big>: bigger text, styled or not. */
-big { font-size: 1.5em; line-height: 1.2 }
-big big {
-  display: block;
-  margin: 0 0 .05em -33.333%;
-  font-size: 7.333em;
-  font-weight: bold;
-  line-height: .8;
-  letter-spacing: -.055em;
-}
+/* Headlines, and headline numbers (<big><big>), hang to the page's edge, tightly set. */
+h1, big big { margin-left: -33.3%; letter-spacing: -.05em }
+h1 { font-size: 4em; line-height: .95 }
+big big { display: block; font: bold 9em/.8 sans-serif }
+h2 { clear: both; margin: 2em 0 1em -33.3%; border-top: medium solid }
 
-p, ul, ol, dl, blockquote, form { margin: 0 0 1em 0 }
-blockquote { width: 66.666% }
-ul, ol { padding: 0 }
-ul { list-style-type: square }
+blockquote { margin: 0 33% 1em 0 }
+dd { margin: 0 }
+ul { padding: 0; list-style: square }
 li { margin-bottom: .5em }
 li a { font-weight: bold }
-small { font-size: .8125em }
 small a { font-weight: normal }
-dd { margin: 0 0 .35em 0 }
 
 /* Red is the browser's own :active colour, borrowed for anything urgent. */
-strong, strong a:link, strong a:visited { color: #e00 }
+strong, strong a { color: #e00 }
 
 /* No border-collapse until CSS2: the browser's cell spacing breaks every rule. */
-table { width: 133.333%; margin: 0 0 1.5em -33.333%; border: 0 }
-th, td {
-  padding: .35em .8em .35em 0;
-  border: 0;
-  border-bottom: thin solid black;
-  text-align: left;
-  vertical-align: top;
-}
-th { border-bottom: medium solid black }
+table { width: 133.3%; margin-left: -33.3%; border: 0 }
+th, td { border: 0; border-bottom: thin solid }
+th { border-bottom: medium solid; text-align: left }
+hr { clear: both }
 </style>
 </head>
 <body>
@@ -336,15 +295,15 @@ function schoolYearStart() {
   return new Date(now.getMonth() >= 7 ? now.getFullYear() : now.getFullYear() - 1, 7, 1); // Aug 1
 }
 
-// Each announcement is a blockquote with a <cite> byline, then an <hr>.
+// Each announcement is a <cite> byline, the blockquote it introduces, and an <hr>. The byline
+// sits outside the quote so it hangs into the label column on the same rule as every other label.
 function announcementList(list) {
   if (!list.length) return h("p", {}, h("em", {}, "No announcements."));
-  return list.map((a) => [h("blockquote", {},
+  return list.map((a) => [
     h("cite", {},
       h("b", {}, courseLink(a) || sourceName(a.source)), " — ", a.author || "", " · ", when(a.posted_at),
       " · ", h("a", { href: itemHref(a) }, "details")),
-    a.description ? text(a.description) : h("div", {}, a.title),
-    attachments(a.attachments)),
+    h("blockquote", {}, a.description ? text(a.description) : h("div", {}, a.title), attachments(a.attachments)),
     h("hr")]);
 }
 
@@ -869,7 +828,9 @@ const HTML40 = `a abbr acronym address applet area b base bdo big blockquote bod
 const HTML40_INPUTS = ["text", "password", "checkbox", "radio", "submit", "reset", "file", "hidden", "image", "button"];
 // Rule 7: lengths are relative to the reader's font size.
 const ABSOLUTE_UNITS = ["px", "pt", "pc", "in", "cm", "mm"];
-// Rule 8: the minified rules fit on one 80x24 terminal screen.
+// Rule 8: the minified rules fit in 997 bytes, about half an 80x24 terminal screen. (It was the
+// whole screen, 1,920 bytes, until the budget was cut.)
+const BUDGET = 997;
 const SCREEN_BYTES = 80 * 24;
 const minify = (css) => css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ")
   .replace(/\s*([{};:,])\s*/g, "$1").replace(/;}/g, "}").trim();
@@ -1000,7 +961,7 @@ function checkSheet(css) {
   }
   const minified = minify(css);
   const bytes = new TextEncoder().encode(minified).length;
-  if (bytes > SCREEN_BYTES) problems.push(["the style sheet", `rule 8: ${bytes} bytes minified, ${bytes - SCREEN_BYTES} more than an 80×24 screen holds`]);
+  if (bytes > BUDGET) problems.push(["the style sheet", `rule 8: ${bytes} bytes minified, ${bytes - BUDGET} over the ${BUDGET}-byte budget`]);
   return { problems, used, colours, minified, bytes, rules: rules.length, declarations: rules.reduce((n, r) => n + r.decls.length, 0) };
 }
 
@@ -1012,8 +973,10 @@ function viewColophon() {
   const sep = (list) => list.flatMap((x, i) => (i ? [", ", x] : [x]));
   const undeclared = Object.keys(PALETTE).filter((x) => !c.colours.has(x));
   const face = resolveFamily("sans-serif", SANS_FACES);
-  // The minified rules as a terminal shows them: 80 columns, then vi's tildes down to line 24.
-  const screen = c.minified.match(/.{1,80}/g) ?? [];
+  // The minified rules as a terminal shows them: 80 columns, the unspent budget as dots, then vi's
+  // tildes down to line 24 for the part of the screen the budget gave up.
+  const spare = Math.max(0, BUDGET - c.bytes);
+  const screen = (c.minified + ".".repeat(spare)).match(/.{1,80}/g) ?? [];
   const tildes = Array(Math.max(0, 24 - screen.length)).fill("~");
   return [
     h("h1", {}, "Colophon"),
@@ -1029,7 +992,7 @@ function viewColophon() {
       h("li", {}, "Generic font families only: serif, sans-serif, monospace, cursive or fantasy, never a font's name. The style sheet asks for sans-serif, and your browser decides what that means."),
       h("li", {}, "HTML 4.0 elements only (W3C Recommendation, 18 December 1997): no main, nav, article or details, and no search, number or URL fields. No font element either, because styling is the style sheet's job."),
       h("li", {}, "Relative lengths only: em, ex, % and the keywords thin and medium, never pixels or points. Your browser's font size is the unit, so set it bigger and the whole grid grows with it."),
-      h("li", {}, "The rules fit on one 80×24 terminal screen: 1,920 bytes, minified. Comments are free, which is why the source at the bottom has so many.")),
+      h("li", {}, `The rules fit in ${BUDGET} bytes, minified: about half an 80×24 terminal screen. The budget used to be the whole screen, ${SCREEN_BYTES.toLocaleString()} bytes, and was cut. Comments are free, which is why the source at the bottom has so many.`)),
     h("h2", {}, "Inspection"),
     h("p", {}, "Problems found: ", huge(problems.length)),
     problems.length
@@ -1057,14 +1020,26 @@ function viewColophon() {
       : face
         ? `Not Helvetica. On a Mac the same style sheet gets Helvetica, and on Windows Arial. Here the Swiss style is set in ${face}, because that's what this browser means by sans-serif.`
         : "Not any of the usual faces, so the browser (or you, in its font settings) chose something else."),
-    h("h2", {}, "The screen"),
-    h("p", {}, `The rules, minified, on an 80×24 terminal: ${c.bytes.toLocaleString()} of ${SCREEN_BYTES.toLocaleString()} bytes, ${screen.length} of 24 lines.`),
+    h("h2", {}, "The budget"),
+    h("p", {}, `The rules, minified, on an 80×24 terminal: ${c.bytes} of ${BUDGET} bytes. The dots are the ${spare} bytes still unspent, and the tildes are the half of the screen the budget gave up.`),
     h("pre", {}, [...screen, ...tildes].join("\n")),
+    h("h2", {}, "Cut for the budget"),
+    h("p", {}, "Going from a screen to half a screen cost these, and each went back to what the browser does on its own:"),
+    h("ul", {},
+      h("li", {}, "The rules between sections. They were thin and black, and now they're the browser's grey, bevelled ones, as in 1997. The heavy rule over each headline stayed."),
+      h("li", {}, "The menu's weight. It was bold, and it's now plain text, with the current page in the italics an <em> gets anyway."),
+      h("li", {}, "Bold labels. Dates and field names are now plain small text, and each announcement's byline is a <cite>, so it's in italics."),
+      h("li", {}, "The opening line's size. It was half as big again as the text, and it's now whatever size <big> gives it."),
+      h("li", {}, "Table cells' padding and top alignment. The browser pads cells and centres them vertically on its own."),
+      h("li", {}, "Spacing between blocks. Paragraphs and lists are spaced by the browser now, which leaves an em above them as well as below."),
+      h("li", {}, "Tracking on section headings, and the small text's exact size."),
+      h("li", {}, "Two decimal places. The thirds went from 33.333% to 33.3%, which moves each label about a third of a pixel on a wide screen."),
+      h("li", {}, "Black text on a white background, which cost 29 bytes to say and nothing to leave out: the browser's defaults are the same.")),
     h("h2", {}, "What stayed default"),
     h("ul", {},
       h("li", {}, "Links are the browser's: blue, underlined, purple once visited. There's no :hover in CSS1, so nothing happens under the pointer."),
       h("li", {}, "Rules break at every table column. Borders can't collapse until CSS2, so the space the browser leaves between cells cuts each rule into pieces."),
-      h("li", {}, "Headlines grow with your font size but not with the window. Without viewport units or media queries, on a phone they wrap or run off the edge."),
+      h("li", {}, "Headlines grow with your font size but not with the window. Without viewport units or media queries, on a phone they wrap or run off the edge. Long web addresses in announcements run off it too: CSS1 can't break a word."),
       h("li", {}, "Punctuation stays. CSS1 can't add or remove text, so the separators written for the plain page (the | between menu items, the · between facts, the colon in \"GPA:\") show in the styled one too."),
       h("li", {}, "Nothing folds away. HTML 4.0 has no <details>, so a source's settings, a run's log and a record's raw data each got a page of their own, the 1997 way."),
       h("li", {}, "The header is a <center>, so with the style sheet off it's centred, like every home page of 1997. The style sheet pulls it left."),
