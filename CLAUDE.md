@@ -185,9 +185,10 @@ A temporary, deliberately unstyled explorer: plain semantic HTML, no CSS, no bui
 It's a user-facing wrapper (Today, Upcoming, Missing, Announcements, Courses, Grades,
 Search, Sync status with sync buttons), not an endpoint browser. Raw API access stays at `/api/docs`.
 
-- `serve.py` is stdlib only. It proxies `/api/*` (and `/openapi.json`, which FastAPI's
-  docs page fetches from the root) to the API, so the API needs no CORS. Every other path
-  serves `index.html`. It re-reads `index.html` on each request, so page edits need only a
+- `serve.py` is stdlib only. It proxies `/api/*` to the API, so the API needs no CORS.
+  It sends `X-Forwarded-Prefix: /api`, which the API's `forwarded_prefix` middleware turns
+  into the request's `root_path`. That way `/api/docs` loads `/api/openapi.json`, and the
+  spec's `servers` is `/api`, so "Try it out" works. Every other path serves `index.html`. It re-reads `index.html` on each request, so page edits need only a
   browser refresh. Changes to `serve.py` need a restart.
 - `index.html` holds all the JS in one inline script. A tiny `h(tag, attrs, ...kids)`
   helper builds the DOM. Views are async functions that return nodes, and the hash router

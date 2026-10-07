@@ -28,8 +28,6 @@ def make_handler(api: str) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:
             if self.path.startswith("/api/"):
                 target = self.path[len("/api"):]
-            elif self.path == "/openapi.json":  # the API's /docs page fetches this from the root
-                target = self.path
             elif self.path == "/favicon.ico":
                 self._send(404, "text/plain", b"Not found")
                 return
@@ -42,6 +40,8 @@ def make_handler(api: str) -> type[BaseHTTPRequestHandler]:
 
         def _proxy(self, target: str, method: str = "GET", body: bytes | None = None) -> None:
             req = urllib.request.Request(api + target, data=body, method=method)
+            # Tells the API it's mounted at /api, so its docs and OpenAPI servers point here.
+            req.add_header("X-Forwarded-Prefix", "/api")
             if ctype := self.headers.get("Content-Type"):
                 req.add_header("Content-Type", ctype)
             if auth := self.headers.get("Authorization"):
