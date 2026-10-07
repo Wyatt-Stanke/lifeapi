@@ -442,9 +442,10 @@ def grades(
          responses={404: {"model": Error, "description": "No GPA has been scraped yet."},
                     **errors(401, 503)})
 def gpa(conn: sqlite3.Connection = Depends(db)) -> float:
-    """The overall GPA as a bare JSON number on a 0–100 scale, e.g. `99.15`. This school's
-    GPA is already a percentage (Infinite Campus shows it on 0–100), so the value is the GPA
-    as published. When several GPA records exist, this is the cumulative weighted one. 404
+    """The overall GPA as a bare JSON number, e.g. `99.15`. This school's GPA is already a
+    percentage (Infinite Campus shows it on a 0–100 scale), so the value is the GPA as
+    published. It's weighted, so honors and AP courses can lift it above 100. When several
+    GPA records exist, this is the cumulative weighted one. 404
     until a GPA has been scraped. Every GPA record (term, unweighted, rank) is in
     `GET /grades`, with `gpa` set."""
     rows = conn.execute(

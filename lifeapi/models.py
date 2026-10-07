@@ -179,7 +179,8 @@ class Grade(BaseModel):
                                examples=["A-"])
     percent: float | None = Field(None, description="Grade as a percentage, 0–100.")
     gpa: float | None = Field(None, description="Set only on overall GPA records (no course), on "
-                                                "the school's own scale (may be 0–100).",
+                                                "the school's own scale (may be 0–100). Weighted "
+                                                "GPAs can exceed the top of the scale.",
                               examples=[99.15])
     url: str | None = Field(None, description="Deep link to this grade on the source.")
     categories: list[dict[str, Any]] = Field(
