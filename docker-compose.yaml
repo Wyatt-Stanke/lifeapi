@@ -28,9 +28,11 @@ services:
 
   # The explorer UI. It proxies /api/* (and the docs at /api/docs) to the api service, so
   # this is the only service that needs a public domain. Enter the API token in the page.
+  # --host-page serves /biggpa at the root of a second domain given to this service.
   frontend:
     build: .
-    command: ["python", "frontend/serve.py", "--host", "0.0.0.0", "--port", "8080", "--api", "http://api:8000"]
+    command: ["python", "frontend/serve.py", "--host", "0.0.0.0", "--port", "8080", "--api", "http://api:8000",
+              "--host-page", "gpa.stan.ke=/biggpa"]
     expose:
       - "8080"
     depends_on:

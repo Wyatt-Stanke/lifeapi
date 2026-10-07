@@ -192,7 +192,9 @@ Search, Sync status with sync buttons), not an endpoint browser. Raw API access 
   into the request's `root_path`. That way `/api/docs` loads `/api/openapi.json`, and the
   spec's `servers` is `/api`, so "Try it out" works. Paths in `PAGES` serve standalone pages,
   and every other path serves `index.html`. It re-reads pages on each request, so page edits need only a
-  browser refresh. Changes to `serve.py` need a restart.
+  browser refresh. Changes to `serve.py` need a restart. `--host-page HOST=PAGE` serves a
+  `PAGES` entry at `/` when the `Host` header (port ignored) is `HOST`. Compose uses it to put
+  `/biggpa` at the root of `gpa.stan.ke`, a second domain on the same service.
 - `biggpa.html` (`/biggpa`) is the one styled page: `GET /api/gpa` in large Inter (Google
   Fonts), black on white, sized to the window by `fit()`, re-fetched every 5 minutes (a failed
   refresh keeps the last value). It sends no token (`/gpa` needs none), so it works on any
