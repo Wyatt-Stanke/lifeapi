@@ -4,6 +4,10 @@ VHL groups work by due date: each calendar day has one or more assignment groups
 "Lección 1: CLW/HW", 2 activities). We read the course calendar (server-rendered month
 fragments) to find due dates, then VHL's own JSON endpoint for each date's groups. We
 never open the activities themselves, since that starts them.
+
+vhlcentral.com sits behind Cloudflare, which challenges visitors it doesn't trust (a
+datacenter IP, a headless browser). So this source runs headed by default, and waits out a
+challenge after every navigation (`cloudflare.pass_challenge`).
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from ...models import Course, Item, ItemKind, ScrapeResult
 from ..auth.clever import launch_app
 from ..base import Source, register
 from ..browser import dump_debug
+from ..cloudflare import pass_challenge
 from ..dates import LOCAL_TZ, now
 
 M3A = "https://m3a.vhlcentral.com"
@@ -74,6 +79,7 @@ def _months(today: date) -> list[str]:
 @register
 class VistaHigherLearning(Source):
     name = "vhl"
+    headed = True
 
     async def scrape(self) -> ScrapeResult:
         page = await self.new_page()
@@ -81,8 +87,12 @@ class VistaHigherLearning(Source):
         try:
             with self.step("opening VHL from the Clever dashboard"):
                 app = await launch_app(self.context, page, "Vista Higher Learning")
+                # Cloudflare can challenge Clever's sign-in callback itself. Leaving that page
+                # before the challenge clears throws away the one-time sign-in code.
+                await pass_challenge(app)
             with self.step("listing classes on the VHL home page"):
                 await app.goto(HOME)
+                await pass_challenge(app)
                 await app.wait_for_selector('a[href*="m3a.vhlcentral.com/courses/"]', timeout=config.timeout(30_000))
                 sections = await app.evaluate(SECTIONS_JS)
             if not sections:
@@ -106,6 +116,7 @@ class VistaHigherLearning(Source):
         # calendar/JSON endpoints need.
         await app.goto(s["href"])
         await app.wait_for_load_state("domcontentloaded")
+        await pass_challenge(app)
         m2 = re.search(r"/courses/(\d+)/sections/(\d+)", app.url)
         if not m2:
             await dump_debug(app, "vhl_dashboard")

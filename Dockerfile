@@ -8,10 +8,12 @@ ENV PYTHONUNBUFFERED=1 \
     LIFEAPI_DATA_DIR=/data \
     TZ=America/New_York
 
-# tzdata: storage treats naive datetimes as local time. xvfb/x11vnc: only for
+# tzdata: storage treats naive datetimes as local time. xvfb: the virtual display for
+# headed sources (VHL), which the scraper starts while they run, and for login.sh. xdotool:
+# clicks Cloudflare's checkbox as a real pointer event. x11vnc: only for
 # deploy/container/login.sh (finishing a sign-in challenge by hand over VNC).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tzdata xvfb x11vnc \
+ && apt-get install -y --no-install-recommends tzdata xvfb x11vnc xdotool \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

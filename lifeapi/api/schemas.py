@@ -116,6 +116,28 @@ class Schedule(BaseModel):
                                                        "fetch will do, or null for a full one.")
 
 
+_HEADED = ("Run this source in a headed (visible) browser instead of a headless one. Bot checks "
+           "such as Cloudflare's spot headless browsers more easily. On a server without a "
+           "screen, the scraper shows it on a virtual display, which costs a little more "
+           "memory and CPU while the source runs.")
+
+
+class BrowserSettings(BaseModel):
+    """How the scraper runs the browser for a source."""
+
+    headed: bool = Field(description=_HEADED, examples=[True])
+
+
+class Browser(BaseModel):
+    """How the scraper runs the browser for a source. Set it with `PUT
+    /sources/{source}/browser`. The scraper's `--headed` flag and `LIFEAPI_HEADLESS=0` show
+    the browser for every source, whatever this says."""
+
+    headed: bool = Field(description=_HEADED)
+    default: bool = Field(description="True when nothing has been set for this source, so "
+                                      "`headed` is the source's own default.")
+
+
 class SourceStatus(BaseModel):
     source: str = Field(description="Source name, as used in every `source` field and filter.",
                         examples=["google_classroom"])
@@ -124,6 +146,7 @@ class SourceStatus(BaseModel):
                                                      "full ones, for its `schedule`. Most "
                                                      "sources have none.")
     schedule: Schedule
+    browser: Browser
     last_run: LastRun | None = Field(description="The most recent scrape of this source, full or "
                                                  "partial; null if it has never run.")
     last_success_at: Timestamp | None = Field(description="When the last successful full run "
@@ -183,7 +206,8 @@ TAGS = [
                                       "scores, and the overall GPA (Infinite Campus)."},
     {"name": "courses", "description": "Classes the student is enrolled in, per source."},
     {"name": "status", "description": "Which sources exist, how fresh their data is, how often "
-                                      "they're fetched, and manual sync requests."},
+                                      "they're fetched and with what browser, and manual sync "
+                                      "requests."},
 ]
 
 DESCRIPTION = f"""
@@ -259,6 +283,11 @@ reads the GPA every 30 minutes and everything every 4th time (every 2 hours). A 
 updates only what it reads and marks nothing inactive. `PUT /sources/{{source}}/schedule` sets
 a schedule and `DELETE` on the same path restores the default. Manual syncs (`POST /sync`)
 are always full and count as a fetch: the next scheduled one is `interval_minutes` after them.
+
+Each source's `browser` says whether it runs in a headed (visible) browser rather than a
+headless one, which gets past some sites' bot checks. `vhl` is headed by default, since
+VHL Central sits behind Cloudflare. `PUT /sources/{{source}}/browser` with `{{"headed": true}}`
+or `false` changes it, and `DELETE` restores the source's default.
 
 ## Authentication
 

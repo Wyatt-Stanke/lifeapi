@@ -10,7 +10,8 @@ separate schedules. They share only `lifeapi/models.py` (pydantic models) and
 `lifeapi/storage.py` (SQLite access). launchd (`deploy/`) or the container loop runs the
 scraper with `--due` every minute, and it fetches the sources that are due on their
 schedules (see "Schedules" below). The API stays up. Its only writes are queueing manual
-sync requests (`POST /sync`) and setting schedules, both of which the scraper picks up.
+sync requests (`POST /sync`) and setting schedules and browser settings, all of which the
+scraper picks up.
 
 ## Commands
 
@@ -50,8 +51,9 @@ College Board API responses contain access tokens, so delete scratch captures wh
 ### Scraper (`lifeapi/scraper/`)
 
 - `runner.py` opens one persistent patchright Chrome context (`browser.py`) and runs each
-  registered source in turn. One Google sign-in is shared by Classroom, Clever (VHL) and
-  Infinite Campus. Each source is isolated: an exception records a failed row in
+  registered source in turn: the headless sources first, then the headed ones in a second
+  launch (see "Headed sources and Cloudflare"). One Google sign-in is shared by Classroom,
+  Clever (VHL) and Infinite Campus, across both launches, since they use the same profile. Each source is isolated: an exception records a failed row in
   `scrape_runs`, and that source's existing data is left untouched.
 - `base.py`: the `Source` ABC plus the `@register` registry. A new platform is one module
   in `sources/` that's imported in `sources/__init__.py`. Sources get `self.previous`
@@ -95,7 +97,11 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   partial fetch signs in and calls only the GPA endpoint.
 - **VHL**: in-page `fetch` of `study_schedule/event_calendar/YYYY-MM` (HTML fragments
   listing the due dates) and `assignments_by_due_date?due_date=` (JSON). Never open
-  activity URLs: that starts the activity.
+  activity URLs: that starts the activity. vhlcentral.com is behind Cloudflare, which
+  challenges the server's datacenter IP, so VHL runs headed by default and calls
+  `pass_challenge` after every navigation. The first call matters most: Cloudflare can
+  challenge Clever's sign-in callback, and navigating away before it clears throws away
+  the one-time `?code=`.
 - **Google Classroom**: DOM only. The extractors are JS strings in
   `sources/google_classroom_js.py`. CSS class names are minified and change between
   releases, so match on `data-*` attributes, ARIA labels and text patterns. Pitfalls that
@@ -127,8 +133,8 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
 
 ### Storage and API
 
-- `storage.py`: tables `courses`, `items`, `grades` and `scrape_runs`, plus `sync_requests`
-  and `schedules`. Each record row stores the full model JSON in `data`, plus a few indexed
+- `storage.py`: tables `courses`, `items`, `grades` and `scrape_runs`, plus `sync_requests`,
+  `schedules` and `browser_settings`. Each record row stores the full model JSON in `data`, plus a few indexed
   columns used by API filters. `save_result` upserts and then, for a full run, marks rows
   not seen in that run `active=0` (soft delete). `datetime`s are stored as UTC ISO strings
   in the indexed columns. New columns go in both `SCHEMA` and `_migrate`. The API's `db()`
@@ -138,7 +144,8 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   `-wal`/`-shm` files after the scraper exits. They also use `check_same_thread=False`,
   because FastAPI opens the per-request connection (the `db()` dependency) and uses it on
   different threadpool threads.
-- `api/app.py`: FastAPI, read-only apart from `/sync` and `/sources/{source}/schedule`. The
+- `api/app.py`: FastAPI, read-only apart from `/sync`, `/sources/{source}/schedule` and
+  `/sources/{source}/browser`. The
   optional `LIFEAPI_API_TOKEN` bearer auth applies to everything except `/health` and `/gpa`
   (public so `/biggpa` works on any device). Every list endpoint hides inactive rows unless
   `include_inactive=true`. The API imports the scraper's `REGISTRY` (to validate sync
@@ -208,11 +215,38 @@ source without a row is fetched in full every `LIFEAPI_SCRAPE_INTERVAL` seconds
   source's `partials` (name -> short description, shown in the explorer) and branch on
   `self.partial`; the API, CLI (`--partial`) and explorer pick it up.
 
+### Headed sources and Cloudflare
+
+Bot checks spot headless Chrome more easily than a headed one, so a source can run headed.
+`Source.headed` is the default (True only for VHL). `PUT /sources/{source}/browser`
+(`{"headed": bool}`) stores a `browser_settings` row that overrides it, and `DELETE`
+restores the default. The explorer edits it in the Sync status page's Browser column.
+`--headed` and `LIFEAPI_HEADLESS=0` make every source headed (`runner._headless`).
+
+- `browser_context()` on Linux with no `DISPLAY` (the container) starts Xvfb
+  (`browser.virtual_display`, `-displayfd` so there's no startup poll) and sets `DISPLAY`
+  while that launch lasts, so Xvfb only runs while headed sources do. `login.sh` already
+  sets `DISPLAY=:99`, so it shares that display. On macOS a headed source opens a real
+  Chrome window. Running headed measured about +140 MB peak RAM and +18% CPU while pages
+  load, with no change in wall time.
+- `cloudflare.pass_challenge(page)` is a no-op unless the page is Cloudflare's "Just a
+  moment..." interstitial (detected from the DOM: the challenge strips its token from the
+  URL). It waits for the page to reload itself, and clicks Turnstile's checkbox if it
+  appears. The click goes through `xdotool` when there's an X display, so it's a real
+  pointer event, otherwise over CDP. patchright's locators reach the checkbox through
+  Turnstile's iframe and shadow roots. If the page doesn't clear within
+  `config.timeout(30_000)`, it saves a debug snapshot and raises `LoginError`, so
+  `/sources` offers `reauth.py`. A clearance lasts as long as the site's Cloudflare
+  settings allow, from the same IP.
+- To test it without a real challenge, serve a page titled "Just a moment..." that embeds
+  Turnstile with Cloudflare's test sitekey `3x00000000000000000000FF` (forces the
+  checkbox) or `2x00000000000000000000AB` (never passes). Test keys work on localhost.
+
 ### Frontend (`frontend/`)
 
 A temporary, deliberately unstyled explorer: plain semantic HTML, no CSS, no build step.
 It's a user-facing wrapper (Today, Upcoming, Missing, Announcements, Courses, Grades,
-Search, Sync status with sync buttons and schedule editors), not an endpoint browser. Raw
+Search, Sync status with sync buttons and schedule and browser editors), not an endpoint browser. Raw
 API access stays at `/api/docs`.
 
 - `serve.py` is stdlib only. It proxies `/api/*` (GET, POST, PUT, DELETE; each method needs its

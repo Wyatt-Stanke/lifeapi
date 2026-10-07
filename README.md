@@ -5,8 +5,9 @@ read-only HTTP API.
 
 The project has two halves that run separately:
 
-- **Scraper** (`python -m lifeapi.scraper`): a stealth headless Chrome
-  ([patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python)) signs in to each
+- **Scraper** (`python -m lifeapi.scraper`): a stealth Chrome
+  ([patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python)), headless
+  except for sources behind bot checks ([Headed sources](#headed-sources)), signs in to each
   platform and writes to `data/lifeapi.db`. Run `--due` every minute and it fetches each
   source on its own schedule (every 2 hours unless set otherwise through the API).
 - **API** (`python -m lifeapi.api`): FastAPI, read-only over the same database except
@@ -43,7 +44,7 @@ Optional settings:
 
 | Variable | Default | |
 |---|---|---|
-| `LIFEAPI_HEADLESS` | `1` | `0` shows the browser window. |
+| `LIFEAPI_HEADLESS` | `1` | `0` shows the browser window for every source. Otherwise each source follows its own setting (see [Headed sources](#headed-sources)). |
 | `LIFEAPI_BROWSER_CHANNEL` | `chrome` | Uses the installed Google Chrome. Set it to empty to use patchright's Chromium instead. |
 | `LIFEAPI_TIMEOUT_SCALE` | `3` | Multiplies the scraper's wait deadlines (page loads, selectors, logins). Raise it on a slow host. |
 | `LIFEAPI_SCRAPE_INTERVAL` | `7200` | Seconds between fetches of a source with no schedule set (see [Schedules](#schedules-and-partial-fetches)). The API reads it too, to report schedules, so give both the same value. |
@@ -115,6 +116,30 @@ page has the same controls ("change" under each schedule), and shows when each s
 next fetched. The interval counts from the start of the source's last run, scheduled or
 manual. A partial fetch only adds and updates records; nothing is marked inactive until
 the next full one.
+
+### Headed sources
+
+VHL Central is behind Cloudflare, which challenges visitors it doesn't trust, such as a
+server's datacenter IP. Headless Chrome is easier for it to spot, so VHL runs in a headed
+(visible) browser by default, and every other source runs headless. To change a source:
+
+```sh
+curl -X PUT http://127.0.0.1:8000/sources/vhl/browser \
+  -H 'Content-Type: application/json' -d '{"headed": false}'
+```
+
+`DELETE` on the same path restores the source's default. The explorer's Sync status page
+has the same control (the Browser column). The scraper runs headed sources in a browser
+launch of their own after the headless ones. On a Linux host with no display (the
+container), it runs that browser on a virtual display (Xvfb, which it starts and stops
+itself; outside the container, install `xvfb` and `xdotool`). On macOS, a Chrome window appears while a headed source runs. Headed costs about
+140 MB more memory at peak, and a bit more CPU while pages load.
+
+When a page shows Cloudflare's "Just a moment..." challenge, the scraper waits for it to
+pass and clicks its "Verify you are human" checkbox if it asks. If it still doesn't pass,
+the run fails with a sign-in error, and the Sync status page shows the
+[`reauth.py`](#finishing-a-sign-in-challenge) command to finish it by hand. If it keeps
+happening, the server's IP is the likely reason, and only a different network fixes that.
 
 ### Syncing on demand
 

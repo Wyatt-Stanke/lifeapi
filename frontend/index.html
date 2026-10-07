@@ -457,6 +457,21 @@ function scheduleForm(s, save) {
       h("button", { type: "button", disabled: sc.default, onclick: () => save(api(path, {}, { method: "DELETE" })) }, "Reset to default")));
 }
 
+const browserText = (s) => (s.browser.headed ? "Headed" : "Headless") + (s.browser.default ? " (default)" : "");
+
+// A source's browser editor, like scheduleForm.
+function browserForm(s, save) {
+  const path = `/sources/${encodeURIComponent(s.source)}/browser`;
+  const headed = h("input", { type: "checkbox", checked: s.browser.headed });
+  return h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    save(api(path, {}, { method: "PUT", json: { headed: headed.checked } }));
+  } },
+    h("p", {}, h("label", {}, headed, " Headed: a visible browser (on a server, a virtual display). Gets past bot checks like Cloudflare's, for a little more memory and CPU.")),
+    h("p", {}, h("button", {}, "Save"), " ",
+      h("button", { type: "button", disabled: s.browser.default, onclick: () => save(api(path, {}, { method: "DELETE" })) }, "Reset to default")));
+}
+
 // Fills in and re-renders its own box (every 5 s while a sync is queued or running) rather
 // than going through route(), so there's no "Loading…" flash.
 async function viewStatus() {
@@ -469,11 +484,12 @@ async function viewStatus() {
     render();
   }
 
-  async function saveSchedule(request) {
+  // `what` names the setting in the error ("schedule", "browser").
+  const saveSetting = (what) => async (request) => {
     try { await request; }
-    catch (e) { alert(`Couldn't change the schedule: ${e.message}`); return; } // leaves the form as it was
+    catch (e) { alert(`Couldn't change the ${what}: ${e.message}`); return; } // leaves the form as it was
     render();
-  }
+  };
 
   async function clear() {
     if (!confirm("Clear the sync request list? Queued requests are cancelled; running ones stay.")) return;
@@ -491,7 +507,7 @@ async function viewStatus() {
     box.replaceChildren(...[ // unlike h(), replaceChildren() would print a null as "null"
       h("p", {}, h("button", { onclick: () => sync(), disabled: active.some((r) => !r.sources) }, "Sync all now")),
       h("table", { border: 1, cellpadding: 4 },
-        h("tr", {}, ["Source", "Schedule", "Next fetch", "Last run", "Result", "Courses", "Items", "Grades", "Last full success", ""].map((x) => h("th", {}, x))),
+        h("tr", {}, ["Source", "Schedule", "Browser", "Next fetch", "Last run", "Result", "Courses", "Items", "Grades", "Last full success", ""].map((x) => h("th", {}, x))),
         sources.map((s) => {
           const r = s.last_run, sc = s.schedule;
           const result = !r ? "never run" : r.ok == null ? (r.finished_at ? "?" : "running…") : r.ok ? "OK" : failure(r.error, s.login_command, r.has_log ? r.run_id : null);
@@ -499,7 +515,9 @@ async function viewStatus() {
           return h("tr", {},
             h("td", {}, sourceName(s.source), s.enabled ? null : h("small", {}, " (disabled)")),
             h("td", {}, scheduleText(s),
-              h("details", { "data-schedule": s.source }, h("summary", {}, "change"), scheduleForm(s, saveSchedule))),
+              h("details", { "data-edit": "" }, h("summary", {}, "change"), scheduleForm(s, saveSetting("schedule")))),
+            h("td", {}, browserText(s),
+              h("details", { "data-edit": "" }, h("summary", {}, "change"), browserForm(s, saveSetting("browser")))),
             h("td", {}, !sc.next_fetch_at ? "—" : new Date(sc.next_fetch_at) <= new Date() ? "due now" : when(sc.next_fetch_at),
               sc.next_fetch_partial ? h("small", {}, ` (${partialText(s, sc.next_fetch_partial)})`) : null),
             h("td", {}, r ? when(r.started_at) : ""),
@@ -523,7 +541,7 @@ async function viewStatus() {
     ].filter((x) => x != null));
     function tick() {
       if (!box.isConnected) return; // navigated away
-      if (box.querySelector("details[data-schedule][open]")) timer = setTimeout(tick, 5000); // don't wipe an edit
+      if (box.querySelector("details[data-edit][open]")) timer = setTimeout(tick, 5000); // don't wipe an edit
       else render().catch(() => {});
     }
     if (active.length) timer = setTimeout(tick, 5000);
@@ -531,7 +549,7 @@ async function viewStatus() {
 
   await render(); // errors on the first load go to route()'s "Couldn't load"
   return [h("h1", {}, "Sync status"),
-    h("p", {}, h("small", {}, "Each source is fetched on its schedule. A partial fetch reads only part of a source (like Infinite Campus's GPA); a sync is always a full fetch.")),
+    h("p", {}, h("small", {}, "Each source is fetched on its schedule. A partial fetch reads only part of a source (like Infinite Campus's GPA); a sync is always a full fetch. A headed browser is a visible one, which gets past some sites' bot checks.")),
     box];
 }
 
