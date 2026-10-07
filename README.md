@@ -171,8 +171,10 @@ It finds the scraper container over SSH, starts a headed scrape in it on a virtu
 systems it prints a `127.0.0.1` port for any VNC viewer). Finish the sign-in there. The
 scrape then carries on, and the session is saved in the `data` volume for scheduled runs.
 If a scheduled run is going, it waits for it first. Ctrl-C stops the session on the server.
-It needs only Python 3 and SSH access to the server as a user that can run `docker` (pass
-`--docker "sudo docker"` otherwise, and `--container NAME` if it can't find the container).
+It needs only Python 3 and SSH access to the server. If your SSH user isn't in the `docker`
+group, it switches to `sudo docker` when docker refuses permission, and asks for your sudo
+password unless sudo needs none (`--sudo` skips the first try). Pass `--container NAME` if
+it can't find the container.
 
 Set `LIFEAPI_REAUTH_TARGET` on the `api` service to your SSH destination so the command on
 the Sync status page is complete. Without it, the page shows `<user@server>`.

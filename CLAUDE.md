@@ -143,7 +143,11 @@ starts Xvfb, x11vnc on the container's loopback and a headed scrape. It then ser
 random `127.0.0.1` port locally, and pipes each VNC connection through `docker exec … python -c`
 into the container, so nothing listens on any network. `login.sh` stops everything
 when its stdin closes (`LIFEAPI_LOGIN_STOP_ON_EOF=1`), so Ctrl-C or a dropped SSH
-connection never leaves a headed Chrome holding the profile lock. The container's `sh` is
+connection never leaves a headed Chrome holding the profile lock. When docker gets
+permission denied, it reruns through sudo: `sudo -n` if sudo needs no password, otherwise
+`sudo -k -S` with a password asked for locally and written as the first line of each
+command's stdin (SSH gives sudo no TTY to prompt on). `-k` makes sure sudo always consumes
+that line, so it never ends up in the VNC stream. The container's `sh` is
 dash: its `kill` rejects `--`, so process groups are killed with `kill -TERM "-$PGID"`.
 `/sources` adds `login_command` (built from `LIFEAPI_REAUTH_TARGET`) when the last run
 failed with `LoginError`, and the Sync status page shows it under the error.
