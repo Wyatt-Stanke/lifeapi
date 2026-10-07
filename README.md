@@ -45,7 +45,7 @@ Optional settings:
 | `LIFEAPI_HEADLESS` | `1` | `0` shows the browser window. |
 | `LIFEAPI_BROWSER_CHANNEL` | `chrome` | Uses the installed Google Chrome. Set it to empty to use patchright's Chromium instead. |
 | `LIFEAPI_TIMEOUT_SCALE` | `3` | Multiplies the scraper's wait deadlines (page loads, selectors, logins). Raise it on a slow host. |
-| `LIFEAPI_API_TOKEN` | unset | If set, the API requires `Authorization: Bearer <token>`. |
+| `LIFEAPI_API_TOKEN` | unset | If set, the API requires `Authorization: Bearer <token>` on everything except `/health` and `/gpa`. |
 | `LIFEAPI_REAUTH_TARGET` | unset | The server's SSH destination (e.g. `root@vps`), or `--local`. Fills in the sign-in command that `/sources` shows when a login gets stuck. See [Finishing a sign-in challenge](#finishing-a-sign-in-challenge). |
 | `LIFEAPI_DATA_DIR` | `./data` | Holds the DB, the browser profile and debug snapshots. |
 | `CLEVER_PORTAL_URL`, `INFINITE_CAMPUS_URL` | Jersey City | District-specific URLs. |
@@ -207,7 +207,7 @@ All list endpoints return only items still present at the source, unless you pas
 | `GET /items/{source}/{id}` | One item. |
 | `GET /courses` | Classes per source. |
 | `GET /grades` | Infinite Campus grades. Filters: `source`, `term`. |
-| `GET /gpa` | The cumulative weighted GPA as a bare number, a percentage (e.g. `99.15`). Weighting can lift it above 100. |
+| `GET /gpa` | The cumulative weighted GPA as a bare number, a percentage (e.g. `99.15`). Weighting can lift it above 100. Needs no token. |
 | `GET /sources` | Every source, whether it's enabled, and its last run (`null` if never): when it ran, whether it succeeded, the error, and counts. |
 | `POST /sync` | Queue a sync now. `source` (repeatable) limits it; omit for every enabled source. Returns the request (202, or 200 if a waiting request already covers it). See [Syncing on demand](#syncing-on-demand). |
 | `GET /sync` | Recent sync requests, newest first. `status`: `pending`, `running`, `done` or `failed` (with `error`). |

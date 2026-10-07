@@ -200,7 +200,7 @@ its previous data stays as it was; check `GET /sources` before trusting stale da
 
 ## Authentication
 
-If the server sets `LIFEAPI_API_TOKEN`, every endpoint except `/health` requires
+If the server sets `LIFEAPI_API_TOKEN`, every endpoint except `/health` and `/gpa` requires
 `Authorization: Bearer <token>`. Otherwise no auth is needed.
 
 ## Errors
