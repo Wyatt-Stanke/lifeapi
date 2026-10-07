@@ -4,11 +4,151 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>lifeapi</title>
+<style>
+/* International Style Sheets, Level 1.
+   The Swiss style, taken as far as CSS1 (W3C Recommendation, 17 December 1996) can take it:
+   1. CSS1's properties, units and selectors only.
+   2. Only the browser's own colours: black, white, link blue, visited purple, active red.
+   3. Element names only. The markup has no classes to hang styles on.
+   4. The page must still read as plain HTML with this sheet switched off.
+   #/colophon checks this sheet against those rules. */
+
+body {
+  margin: 0;
+  padding: 1.5em 4% 3em 4%;
+  background: white;
+  color: black;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+/* The grid: a label column (the left quarter) and a content column (the rest). main is the
+   content column, and labels hang out of it on negative margins (-33.333% of main is a quarter
+   of the page), because CSS1 has no grid, no positioning and no sibling selectors. */
+main { margin: 0 0 5em 25% }
+footer { margin-left: 25%; padding-top: .6em }
+
+header {
+  border-top: 12px solid black;
+  padding-top: .5em;
+  font-weight: bold;
+}
+header b { float: left; width: 22% }
+nav { margin-left: 25% }
+nav b { float: none; width: auto }
+main nav { margin: .8em 0 0 -33.333% }
+td details { margin: 0 }
+
+hr {
+  clear: both;
+  margin: .6em 0 0 0;
+  border-style: solid;
+  border-width: 1px 0 0 0;
+  border-color: black;
+}
+
+h1 {
+  margin: .45em 0 .3em -33.333%;
+  font-size: 4em;
+  line-height: .95;
+  letter-spacing: -.045em;
+}
+h2 {
+  clear: both;
+  margin: 2.2em 0 .9em -33.333%;
+  padding-top: .3em;
+  border-top: 3px solid black;
+  font-size: 1.5em;
+  line-height: 1.1;
+  letter-spacing: -.02em;
+}
+/* Labels are caption-sized, with a line box as tall as the text's, so they sit on its baselines. */
+h3 {
+  float: left;
+  clear: left;
+  width: 29.333%;
+  margin: 0 0 1em -33.333%;
+  font-size: .8125em;
+  line-height: 1.6;
+}
+hgroup { margin-bottom: 2.5em }
+hgroup p {
+  margin: 0;
+  font-size: 1.5em;
+  line-height: 1.2;
+  letter-spacing: -.01em;
+}
+
+p, ul, ol, dl, blockquote, details, form { margin: 0 0 1em 0 }
+blockquote { width: 66.666% }
+ul, ol { padding: 0 }
+ul { list-style-type: square }
+li { margin-bottom: .5em }
+li a { font-weight: bold }
+small { font-size: .8125em }
+small a { font-weight: normal }
+pre { margin: 0 0 1em 0; font-size: .8125em }
+
+/* Red is the browser's own :active colour, borrowed for anything urgent. */
+strong, strong a:link, strong a:visited { color: #e00 }
+
+dt {
+  float: left;
+  clear: left;
+  width: 29.333%;
+  margin-left: -33.333%;
+  font-weight: bold;
+}
+dd { margin: 0 0 .35em 0 }
+
+article { clear: both }
+article p {
+  float: left;
+  width: 29.333%;
+  margin: 0 0 1em -33.333%;
+  font-size: .8125em;
+  line-height: 1.6;
+}
+article hr { margin: 1.2em 0 1.2em -33.333% }
+
+/* No border-collapse until CSS2: the browser's 2px of cell spacing breaks every rule. */
+table {
+  width: 133.333%;
+  margin: 0 0 1.5em -33.333%;
+  border: 0;
+}
+th, td {
+  padding: .35em .8em .35em 0;
+  border: 0;
+  border-bottom: 1px solid black;
+  text-align: left;
+  vertical-align: top;
+}
+th { border-bottom: 3px solid black }
+
+/* Big numbers. No viewport units, so they're as big as a desktop allows and no bigger. */
+data {
+  display: block;
+  margin: 0 0 .05em -33.333%;
+  font-size: 11em;
+  font-weight: bold;
+  line-height: .8;
+  letter-spacing: -.055em;
+}
+hgroup data {
+  display: inline;
+  margin: 0;
+  font-size: 1em;
+  line-height: 1.2;
+  letter-spacing: -.01em;
+}
+</style>
 </head>
 <body>
 <header>
-  <strong>lifeapi</strong> —
-  <nav style="display:inline">
+  <b>lifeapi</b>
+  <nav>
     <a href="#/">Today</a> |
     <a href="#/upcoming">Upcoming</a> |
     <a href="#/missing">Missing</a> |
@@ -26,6 +166,8 @@
   <small>
     <label>API token <input id="token" type="password" size="20"></label>
     · temporary explorer; raw API at <a href="/api/docs" target="_blank">/api/docs</a>
+    · set in International Style Sheets, Level 1 (<a href="#/colophon">colophon</a>)
+    · <button id="style-toggle" type="button">Turn style sheet off</button>
   </small>
 </footer>
 
@@ -38,7 +180,7 @@ const h = (tag, attrs = {}, ...kids) => {
     if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
     else if (v !== false && v != null) el.setAttribute(k, v === true ? "" : v);
   }
-  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
+  for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) el.append(kid);
   return el;
 };
 
@@ -80,6 +222,8 @@ const label = (s) => s ? s.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCas
 const DONE = new Set(["turned_in", "completed", "graded", "done", "returned", "handed_in"]);
 // GPAs are published to three places; JSON drops the trailing zeros (99.150 arrives as 99.15).
 const gpaText = (n) => n.toFixed(3);
+// A headline number. The style sheet sets <data> big (and inline in a standfirst).
+const num = (value, text = String(value)) => h("data", { value }, text);
 
 const dayKey = (d) => d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
 const time = (d) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -130,7 +274,7 @@ function itemLine(it, { showDue = true, showCourse = true } = {}) {
   if (showCourse && it.course_name) bits.push(courseLink(it));
   bits.push(sourceName(it.source));
   if (it.kind !== "assignment") bits.push(label(it.kind));
-  if (it.status) bits.push(DONE.has(it.status) ? `✓ ${label(it.status)}` : label(it.status));
+  if (it.status) bits.push(DONE.has(it.status) ? `✓ ${label(it.status)}` : it.status === "missing" ? h("strong", {}, label(it.status)) : label(it.status));
   if (score(it)) bits.push(score(it));
   const sep = bits.flatMap((b, i) => (i ? [" · ", b] : [b]));
   return h("li", {},
@@ -143,11 +287,15 @@ function itemLine(it, { showDue = true, showCourse = true } = {}) {
 const itemList = (items, opts) => items.length ? h("ul", {}, items.map((it) => itemLine(it, opts))) : h("p", {}, h("em", {}, "Nothing here."));
 
 function text(s) {
-  // Plain text with line breaks preserved and bare URLs linked.
-  const out = h("div", { style: "white-space: pre-wrap" });
-  for (const part of String(s).split(/(https?:\/\/\S+)/)) {
-    out.append(/^https?:\/\//.test(part) ? h("a", { href: part, target: "_blank" }, part) : part);
-  }
+  // Plain text with line breaks kept and bare URLs linked. The breaks are <br>s, not
+  // white-space: pre-wrap, which is CSS2.
+  const out = h("div");
+  String(s).split("\n").forEach((line, i) => {
+    if (i) out.append(h("br"));
+    for (const part of line.split(/(https?:\/\/\S+)/)) {
+      out.append(/^https?:\/\//.test(part) ? h("a", { href: part, target: "_blank" }, part) : part);
+    }
+  });
   return out;
 }
 
@@ -165,12 +313,14 @@ async function viewToday() {
     api("/items/upcoming", { days: 7 }), api("/items/missing"), api("/announcements", { days: 3 }),
   ]);
   const recentMissing = missing.filter((it) => new Date(it.due_at) > new Date(Date.now() - 14 * 86400000));
+  const missingLink = h("a", { href: "#/missing" }, num(missing.length), " missing");
   return [
-    h("h1", {}, new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })),
-    h("p", {},
-      h("a", { href: "#/upcoming" }, `${upcoming.length} due this week`), " · ",
-      h("a", { href: "#/missing" }, `${missing.length} missing`), ` (${recentMissing.length} from the last 2 weeks)`, " · ",
-      h("a", { href: "#/announcements" }, `${ann.length} announcements in 3 days`)),
+    h("hgroup", {},
+      h("h1", {}, new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })),
+      h("p", {},
+        h("a", { href: "#/upcoming" }, num(upcoming.length), " due this week"), " · ",
+        missing.length ? h("strong", {}, missingLink) : missingLink, ` (${recentMissing.length} from the last 2 weeks)`, " · ",
+        h("a", { href: "#/announcements" }, num(ann.length), " announcements in 3 days"))),
     h("h2", {}, "Due this week"),
     ...byDay(upcoming),
     h("h2", {}, "Recently missed"),
@@ -230,7 +380,7 @@ function announcementList(list) {
   if (!list.length) return h("p", {}, h("em", {}, "No announcements."));
   return h("div", {}, list.map((a) => h("article", {},
     h("p", {},
-      h("strong", {}, courseLink(a) || sourceName(a.source)), " — ", a.author || "", " · ", when(a.posted_at),
+      h("b", {}, courseLink(a) || sourceName(a.source)), " — ", a.author || "", " · ", when(a.posted_at),
       " · ", h("a", { href: itemHref(a) }, "details")),
     a.description ? h("blockquote", {}, text(a.description)) : h("blockquote", {}, a.title),
     attachments(a.attachments),
@@ -280,11 +430,12 @@ async function viewCourse(source, id, params) {
   const ann = items.filter((it) => it.kind === "announcement");
   const courseGrades = grades.filter((g) => g.course_id === id);
   return [
-    h("p", {}, h("a", { href: "#/courses" }, "← Courses")),
+    h("nav", {}, h("a", { href: "#/courses" }, "← Courses")),
     params.get("missing_item") ? h("p", {}, h("strong", {}, "That item hasn't been scraped yet, so here's its course.")) : null,
-    h("h1", {}, c.name),
-    h("p", {}, [sourceName(source), c.section, c.teacher].filter(Boolean).join(" · "),
-      c.url ? [" · ", h("a", { href: c.url, target: "_blank" }, `open in ${sourceName(source)}`)] : null),
+    h("hgroup", {},
+      h("h1", {}, c.name),
+      h("p", {}, [sourceName(source), c.section, c.teacher].filter(Boolean).join(" · "),
+        c.url ? [" · ", h("a", { href: c.url, target: "_blank" }, `open in ${sourceName(source)}`)] : null)),
     courseGrades.length ? [h("h2", {}, "Grades"), gradeTable(courseGrades)] : null,
     h("h2", {}, `Upcoming (${upcoming.length})`), itemList(upcoming, { showCourse: false }),
     h("h2", {}, `Past & undated work (${past.length})`), itemList(past, { showCourse: false }),
@@ -301,20 +452,21 @@ async function viewItem(source, id) {
     ["Posted by", it.author],
     ["Posted", it.posted_at && [fullDate(it.posted_at), " (", relative(it.posted_at), ")"]],
     ["Due", it.due_at ? [fullDate(it.due_at), " (", relative(it.due_at), ")"] : it.due_text],
-    ["Status", label(it.status)],
+    ["Status", it.status === "missing" ? h("strong", {}, label(it.status)) : label(it.status)],
     ["Points", score(it)],
     ["Archived", it.active === false ? "Yes — no longer seen in the source" : null],
   ].filter(([, v]) => v && (!Array.isArray(v) || v.length));
   return [
-    h("p", {}, h("a", { href: "javascript:history.back()" }, "← Back")),
-    h("h1", {}, it.title),
-    it.url ? h("p", {}, h("a", { href: it.url, target: "_blank" }, `Open in ${sourceName(it.source)} ↗`)) : null,
-    h("table", {}, facts.map(([k, v]) => h("tr", {}, h("th", { align: "left" }, k), h("td", {}, v)))),
-    it.description ? [h("h2", {}, "Description"), text(it.description)] : null,
+    h("nav", {}, h("a", { href: "javascript:history.back()" }, "← Back")),
+    h("hgroup", {},
+      h("h1", {}, it.title),
+      it.url ? h("p", {}, h("a", { href: it.url, target: "_blank" }, `Open in ${sourceName(it.source)} ↗`)) : null),
+    h("dl", {}, facts.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])),
+    it.description ? [h("h2", {}, "Description"), h("blockquote", {}, text(it.description))] : null,
     it.attachments?.length ? [h("h2", {}, "Attachments"), attachments(it.attachments)] : null,
     it.extra?.submitted_work?.length ? [h("h2", {}, "Your submitted work"), attachments(it.extra.submitted_work)] : null,
     it.comments?.length ? [h("h2", {}, "Comments"), h("ul", {}, it.comments.map((c) => h("li", {},
-      h("strong", {}, c.author || "?"), c.private ? " (private)" : "", c.posted_at ? ` · ${c.posted_at}` : "", ": ", c.text)))] : null,
+      h("b", {}, c.author || "?"), c.private ? " (private)" : "", c.posted_at ? ` · ${c.posted_at}` : "", ": ", c.text)))] : null,
     h("details", {}, h("summary", {}, "All data"), h("pre", {}, JSON.stringify(it, null, 2))),
   ];
 }
@@ -325,7 +477,7 @@ function gradeTable(grades) {
     grades.map((g) => h("tr", {},
       h("td", {}, g.course_id ? h("a", { href: courseHref(g.source, g.course_id) }, g.course_name) : g.course_name),
       h("td", {}, [g.term, g.task].filter(Boolean).join(" — ")),
-      h("td", {}, h("strong", {}, g.letter || "")),
+      h("td", {}, h("b", {}, g.letter || "")),
       h("td", {}, g.percent != null ? `${g.percent}%` : ""),
       h("td", {}, g.teacher || ""),
       h("td", {}, h("a", { href: `#/grade/${encodeURIComponent(g.source)}/${encodeURIComponent(g.id)}` },
@@ -341,7 +493,7 @@ async function viewGrades(params) {
   const shown = term ? grades.filter((g) => g.term === term) : grades;
   return [
     h("h1", {}, "Grades"),
-    gpas.map((g) => h("p", {}, `${g.course_name}${g.term ? ` (${g.term})` : ""}: `, h("strong", {}, gpaText(g.gpa)),
+    gpas.map((g) => h("p", {}, `${g.course_name}${g.term ? ` (${g.term})` : ""}: `, num(g.gpa, gpaText(g.gpa)),
       g.extra?.weighted === false ? " unweighted" : "", g.extra?.rank != null ? ` · rank ${g.extra.rank}${g.extra.out_of ? ` of ${g.extra.out_of}` : ""}` : "")),
     terms.length > 1 ? h("p", {}, "Term ", h("select", { onchange: (e) => { location.hash = "#/grades" + (e.target.value ? "?term=" + encodeURIComponent(e.target.value) : ""); } },
       h("option", { value: "" }, "All"), terms.map((t) => h("option", { value: t, selected: t === term }, t)))) : null,
@@ -353,11 +505,13 @@ async function viewGrade(source, id) {
   const g = (await api("/grades", { source, include_inactive: true })).find((x) => x.id === id);
   if (!g) throw new Error("Grade not found");
   return [
-    h("p", {}, h("a", { href: "#/grades" }, "← Grades")),
-    h("h1", {}, g.course_name),
-    h("p", {}, [g.term, g.task, g.teacher, sourceName(g.source)].filter(Boolean).join(" · "),
-      g.url ? [" · ", h("a", { href: g.url, target: "_blank" }, "open ↗")] : null),
-    h("p", {}, h("strong", {}, g.gpa != null ? `GPA ${gpaText(g.gpa)}` : `${g.letter || "—"}${g.percent != null ? ` (${g.percent}%)` : ""}`)),
+    h("nav", {}, h("a", { href: "#/grades" }, "← Grades")),
+    h("hgroup", {},
+      h("h1", {}, g.course_name),
+      h("p", {}, [g.term, g.task, g.teacher, sourceName(g.source)].filter(Boolean).join(" · "),
+        g.url ? [" · ", h("a", { href: g.url, target: "_blank" }, "open ↗")] : null)),
+    h("p", {}, g.gpa != null ? ["GPA ", num(g.gpa, gpaText(g.gpa))]
+      : [num(g.percent ?? "", g.letter || "—"), g.percent != null ? ` (${g.percent}%)` : ""]),
     g.categories?.length ? [h("h2", {}, "Categories"), h("table", { border: 1, cellpadding: 4 },
       h("tr", {}, Object.keys(g.categories[0]).map((k) => h("th", {}, label(k)))),
       g.categories.map((c) => h("tr", {}, Object.values(c).map((v) => h("td", {}, typeof v === "object" && v ? JSON.stringify(v) : String(v ?? ""))))))] : null,
@@ -660,6 +814,160 @@ async function viewOpen(params) {
   ];
 }
 
+// ---------- colophon: the style sheet's rules, checked against the style sheet itself ----------
+
+// CSS1, section 5: every property, and the keyword values of the ones that only take keywords.
+const CSS1_PROPERTIES = `font-family font-style font-variant font-weight font-size font
+  color background-color background-image background-repeat background-attachment background-position background
+  word-spacing letter-spacing text-decoration vertical-align text-transform text-align text-indent line-height
+  margin-top margin-right margin-bottom margin-left margin padding-top padding-right padding-bottom padding-left padding
+  border-top-width border-right-width border-bottom-width border-left-width border-width border-color border-style
+  border-top border-right border-bottom border-left border width height float clear
+  display white-space list-style-type list-style-image list-style-position list-style`.split(/\s+/);
+const CSS1_KEYWORDS = {
+  display: "block inline list-item none", "white-space": "normal pre nowrap", float: "left right none",
+  clear: "none left right both", "text-transform": "capitalize uppercase lowercase none",
+  "text-align": "left right center justify", "text-decoration": "none underline overline line-through blink",
+  "font-style": "normal italic oblique", "font-variant": "normal small-caps",
+  "font-weight": "normal bold bolder lighter 100 200 300 400 500 600 700 800 900",
+  "border-style": "none dotted dashed solid double groove ridge inset outset",
+  "list-style-type": "disc circle square decimal lower-roman upper-roman lower-alpha upper-alpha none",
+  "list-style-position": "inside outside", "background-repeat": "repeat repeat-x repeat-y no-repeat",
+  "background-attachment": "scroll fixed",
+};
+const CSS1_UNITS = ["px", "pt", "pc", "in", "cm", "mm", "em", "ex", "%"];
+const CSS1_COLOURS = { aqua: "#00ffff", black: "#000000", blue: "#0000ff", fuchsia: "#ff00ff", gray: "#808080",
+  green: "#008000", lime: "#00ff00", maroon: "#800000", navy: "#000080", olive: "#808000", purple: "#800080",
+  red: "#ff0000", silver: "#c0c0c0", teal: "#008080", white: "#ffffff", yellow: "#ffff00" };
+// Rule 2: the colours a browser uses before any style sheet arrives.
+const PALETTE = { "#000000": "text", "#ffffff": "paper", "#0000ee": "link", "#551a8b": "visited link", "#ee0000": "active link" };
+
+const hex6 = (c) => {
+  c = c.toLowerCase();
+  if (CSS1_COLOURS[c]) return CSS1_COLOURS[c];
+  return c.length === 4 ? "#" + [...c.slice(1)].map((x) => x + x).join("") : c;
+};
+
+function parseSheet(css) {
+  const src = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const atRules = [...src.matchAll(/@[\w-]+/g)].map((m) => m[0]);
+  const rules = [...src.matchAll(/([^{}]*)\{([^{}]*)\}/g)].map((m) => ({
+    selectors: m[1].split(",").map((s) => s.trim().replace(/\s+/g, " ")),
+    decls: m[2].split(";").map((d) => d.trim()).filter(Boolean).map((d) => {
+      const i = d.indexOf(":");
+      return { prop: d.slice(0, i).trim().toLowerCase(), value: d.slice(i + 1).trim() };
+    }),
+  }));
+  return { atRules, rules };
+}
+
+function selectorProblem(sel) {
+  if (/[>+~]/.test(sel)) return "child and sibling combinators are CSS2";
+  if (sel.includes("[")) return "attribute selectors are CSS2";
+  if (sel.includes("*")) return "the universal selector is CSS2";
+  if (sel.includes("::")) return "double-colon pseudo-elements are CSS3";
+  const parts = sel.split(" ");
+  for (const [i, part] of parts.entries()) {
+    if (/[.#]/.test(part)) return "CSS1 has classes and IDs, but rule 3 says element names only";
+    const m = part.match(/^([a-z][a-z0-9]*)((?::[a-z-]+)*)$/i);
+    if (!m) return "not a CSS1 selector";
+    for (const pseudo of m[2].split(":").filter(Boolean)) {
+      if (["link", "visited", "active"].includes(pseudo)) {
+        if (m[1].toLowerCase() !== "a") return `in CSS1, :${pseudo} belongs to A only`;
+      } else if (["first-line", "first-letter"].includes(pseudo)) {
+        if (i !== parts.length - 1) return `:${pseudo} has to come last`;
+      } else return `:${pseudo} isn't CSS1`;
+    }
+  }
+  return null;
+}
+
+function declarationProblem({ prop, value }) {
+  if (!CSS1_PROPERTIES.includes(prop)) return `${prop} isn't one of CSS1's ${CSS1_PROPERTIES.length} properties`;
+  const v = value.replace(/!\s*important$/i, "").replace(/"[^"]*"|'[^']*'/g, '""').trim();
+  if (/\b(inherit|initial|unset|revert)\b/i.test(v)) return "global keywords like inherit came later";
+  const fn = v.match(/([a-z-]+)\(/i);
+  if (fn && !["rgb", "url"].includes(fn[1].toLowerCase())) return `${fn[1]}() isn't CSS1`;
+  if ((prop === "color" || prop === "background-color") && /^[a-z]+$/i.test(v)
+      && !CSS1_COLOURS[v.toLowerCase()] && !(prop === "background-color" && v === "transparent")) {
+    return `${v} isn't one of CSS1's 16 colour names`;
+  }
+  const colours = v.match(/#[0-9a-f]{3,6}\b|\b[a-z]+\b/gi)?.filter((t) => t.startsWith("#") || CSS1_COLOURS[t.toLowerCase()]) ?? [];
+  for (const c of colours) if (!PALETTE[hex6(c)]) return `rule 2: ${c} isn't one of the browser's own colours`;
+  for (const [, , unit] of v.replace(/#[0-9a-f]+/gi, "").matchAll(/(-?\d*\.?\d+)([a-z%]*)/gi)) {
+    if (unit && !CSS1_UNITS.includes(unit.toLowerCase())) return `${unit} isn't a CSS1 unit`;
+  }
+  const allowed = CSS1_KEYWORDS[prop]?.split(" ");
+  const bad = allowed && v.split(/\s+/).find((t) => !allowed.includes(t.toLowerCase()));
+  if (bad) return `${bad} isn't a CSS1 value for ${prop}`;
+  if (prop.startsWith("padding") && /(^|\s)-/.test(v)) return "CSS1 doesn't allow negative padding";
+  return null;
+}
+
+function checkSheet(css) {
+  const { atRules, rules } = parseSheet(css);
+  const problems = atRules.filter((a) => a !== "@import").map((a) => [a, "the only at-rule in CSS1 is @import"]);
+  const used = new Map(), colours = new Set();
+  for (const r of rules) {
+    for (const s of r.selectors) { const why = selectorProblem(s); if (why) problems.push([s, why]); }
+    for (const d of r.decls) {
+      const why = declarationProblem(d);
+      if (why) problems.push([`${d.prop}: ${d.value}`, why]);
+      used.set(d.prop, (used.get(d.prop) || 0) + 1);
+      for (const c of d.value.match(/#[0-9a-f]{3,6}\b|\b[a-z]+\b/gi) ?? []) if (PALETTE[hex6(c)]) colours.add(hex6(c));
+    }
+  }
+  const lines = css.trim().split("\n").length;
+  return { problems, used, colours, rules: rules.length, declarations: rules.reduce((n, r) => n + r.decls.length, 0), lines };
+}
+
+function viewColophon() {
+  const css = $("style").textContent;
+  const c = checkSheet(css);
+  const sep = (list) => list.flatMap((x, i) => (i ? [", ", x] : [x]));
+  const undeclared = Object.keys(PALETTE).filter((x) => !c.colours.has(x));
+  return [
+    h("hgroup", {},
+      h("h1", {}, "Colophon"),
+      h("p", {}, "This explorer is set in International Style Sheets, Level 1: the Swiss style, taken as far as CSS1 could take it in December 1996, and not a step further.")),
+    h("h2", {}, "The rules"),
+    h("ol", {},
+      h("li", {}, "CSS Level 1 only: its ", CSS1_PROPERTIES.length, " properties, its units and its selectors. Nothing from CSS2 or later, so no grid, flexbox, positioning, media queries, :hover, web fonts, max-width or overflow."),
+      h("li", {}, "Only the colours the browser already uses: black text on white paper, ",
+        h("a", { href: "#/colophon?unvisited=" + Date.now() }, "link blue"), ", ",
+        h("a", { href: "#/colophon" }, "visited purple"), ", and ", h("strong", {}, "the red a link turns while you click it"), ", borrowed for anything urgent."),
+      h("li", {}, "Element names only. The markup has no classes, so the style sheet can style h1, dt and blockquote, but never .anything."),
+      h("li", {}, "The style sheet has to be optional. Turn it off (the button at the bottom of every page) and each page still reads as plain HTML.")),
+    h("h2", {}, "Inspection"),
+    h("p", {}, "Problems found: ", num(c.problems.length)),
+    c.problems.length
+      ? h("table", { border: 1, cellpadding: 4 }, h("tr", {}, h("th", {}, "Where"), h("th", {}, "Why")),
+        c.problems.map(([where, why]) => h("tr", {}, h("td", {}, h("code", {}, where)), h("td", {}, h("strong", {}, why)))))
+      : h("p", {}, `Checked just now, in your browser, against the style sheet in this page: ${c.rules} rules, ${c.declarations} declarations, ${c.lines} lines.`),
+    h("dl", {},
+      h("dt", {}, `Uses ${c.used.size} of ${CSS1_PROPERTIES.length} properties`),
+      h("dd", {}, sep([...c.used].sort((a, b) => b[1] - a[1]).map(([p, n]) => [h("b", {}, p), ` ×${n}`]))),
+      h("dt", {}, "Never needed"),
+      h("dd", {}, sep(CSS1_PROPERTIES.filter((p) => !c.used.has(p)))),
+      h("dt", {}, "Colours"),
+      h("dd", {}, sep([...c.colours].map((x) => `${x} (${PALETTE[x]})`)),
+        undeclared.length ? ["; and, never declared, the browser's own ", sep(undeclared.map((x) => `${x} (${PALETTE[x]})`))] : null)),
+    h("h2", {}, "What stayed default"),
+    h("ul", {},
+      h("li", {}, "Links are the browser's: blue, underlined, purple once visited. There's no :hover in CSS1, so nothing happens under the pointer."),
+      h("li", {}, "Rules break at every table column. Borders can't collapse until CSS2, so the 2 pixels the browser leaves between cells cut each rule into pieces."),
+      h("li", {}, "Headlines don't scale with the window. Without viewport units or media queries they're a fixed size, and on a phone they wrap or run off the edge."),
+      h("li", {}, "Punctuation stays. CSS1 can't add or remove text, so the separators written for the plain page (the | between menu items, the · between facts, the colon in \"GPA:\") show in the styled one too."),
+      h("li", {}, "Buttons, fields, menus and disclosure triangles belong to the operating system, as they did in 1996."),
+      h("li", {}, "No web fonts. It's Helvetica Neue if this computer has it, then Helvetica, then Arial."),
+      h("li", {}, "Preformatted text runs off the edge, because overflow is CSS2."),
+      h("li", {}, "The grid is floats and negative margins: content in the right three quarters, labels hung into the left quarter."),
+      h("li", {}, "The bullets survived. They're squares now.")),
+    h("h2", {}, "The style sheet"),
+    h("pre", {}, css.trim()),
+  ];
+}
+
 // ---------- router ----------
 
 const routes = [
@@ -675,7 +983,35 @@ const routes = [
   [/^\/search$/, viewSearch],
   [/^\/status$/, viewStatus],
   [/^\/open$/, viewOpen],
+  [/^\/colophon$/, viewColophon],
 ];
+
+const NAV = [["#/", "Today"], ["#/upcoming", "Upcoming"], ["#/missing", "Missing"], ["#/announcements", "Announcements"],
+  ["#/courses", "Courses"], ["#/grades", "Grades"], ["#/search", "Search"], ["#/status", "Sync status"]];
+
+// The current section is plain bold text rather than a link to itself: "you are here" in both
+// modes, since CSS1 can't select a link by its aria-current.
+function renderNav(path) {
+  const top = path.split("/")[1];
+  const section = { course: "courses", grade: "grades" }[top] ?? top;
+  $("header nav").replaceChildren(...NAV.flatMap(([href, name], i) => [i ? " | " : null,
+    href.slice(2) === section ? h("b", { "aria-current": "page" }, name) : h("a", { href }, name)]).filter((x) => x != null));
+}
+
+// The style sheet can be switched off, to show the plain page underneath.
+const styleToggle = $("#style-toggle");
+function setStyled(on) {
+  $("style").disabled = !on;
+  styleToggle.textContent = on ? "Turn style sheet off" : "Turn style sheet on";
+}
+let styled = true;
+try { styled = localStorage.getItem("lifeapi-style") !== "off"; } catch {}
+setStyled(styled);
+styleToggle.addEventListener("click", () => {
+  styled = !styled;
+  setStyled(styled);
+  try { localStorage.setItem("lifeapi-style", styled ? "on" : "off"); } catch {}
+});
 
 let seq = 0;
 async function route() {
@@ -686,6 +1022,7 @@ async function route() {
   }
   const [path, query] = (location.hash.slice(1) || "/").split("?");
   const params = new URLSearchParams(query || "");
+  renderNav(path);
   const main = $("#main");
   const mine = ++seq;
   main.textContent = "Loading…";
