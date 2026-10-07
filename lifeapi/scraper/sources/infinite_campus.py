@@ -3,6 +3,7 @@
 After the browser signs in, the portal's own JSON endpoints are called with the session:
   /campus/resources/portal/grades                    -> courses x terms x grading tasks
   /campus/resources/portal/grades/detail/<section>   -> categories + assignment scores
+  /campus/api/campus/grading/gpas/my/gpa             -> overall GPAs (cumulative, maybe term)
 """
 
 from __future__ import annotations
@@ -42,7 +43,10 @@ class InfiniteCampus(Source):
         try:
             await self._login(page)
             enrollments = await self._get(page, "/campus/resources/portal/grades")
-            return await self._parse(page, enrollments)
+            result = await self._parse(page, enrollments)
+            gpas = await self._get(page, "/campus/api/campus/grading/gpas/my/gpa")
+            result.grades += [g for g in map(self._gpa, gpas) if g.gpa is not None]
+            return result
         finally:
             await page.close()
 
@@ -136,6 +140,34 @@ class InfiniteCampus(Source):
 
         result.courses = list(courses.values())
         return result
+
+    def _gpa(self, g: dict) -> Grade:
+        # e.g. {"calendarID": 6779, "type": "Cumulative", "termName": null, "gpa": "99.150",
+        #       "unweighted": false, "rank": null, "outOf": null, "gpaName": null}
+        kind = _clean(g.get("type")) or "GPA"
+        term = _clean(g.get("termName"))
+        return Grade(
+            source=self.name,
+            id=f"gpa:{g.get('calendarID')}:{kind.lower()}:{g.get('termSeq') or ''}"
+               f":{'uw' if g.get('unweighted') else 'w'}",
+            course_name=_clean(g.get("gpaName")) or f"{kind} GPA",
+            term=term,
+            task=f"{kind} GPA",
+            gpa=_num(g.get("gpa")),
+            url=self._url("grades"),
+            extra={
+                k: v for k, v in {
+                    "type": kind.lower(),
+                    "weighted": not g.get("unweighted"),
+                    "gpa_with_bonus": _num(g.get("gpaBonus")),
+                    "bonus_points": _num(g.get("bonusPoints")),
+                    "rank": g.get("rank"),
+                    "rank_with_bonus": g.get("rankBonus"),
+                    "out_of": g.get("outOf"),
+                    "calendar_id": g.get("calendarID"),
+                }.items() if v is not None
+            },
+        )
 
     def _grade(self, course: Course, t: dict, det: dict | None) -> Grade:
         # A posted grade (`score`/`percent`) wins over the in-progress one.
