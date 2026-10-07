@@ -12,7 +12,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Path, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .. import config, storage
@@ -31,6 +31,17 @@ app = FastAPI(
     version="1.0.0",
     openapi_tags=TAGS,
 )
+
+
+@app.middleware("http")
+async def forwarded_prefix(request: Request, call_next):
+    # Behind frontend/serve.py the API lives under /api, and the proxy says so in this
+    # header. As the request's root_path it makes /docs fetch /api/openapi.json and the spec
+    # list /api as its server, so "Try it out" calls /api/<path>. Direct access is unaffected.
+    prefix = request.headers.get("x-forwarded-prefix", "").rstrip("/")
+    if prefix.startswith("/"):
+        request.scope["root_path"] = prefix
+    return await call_next(request)
 
 _bearer = HTTPBearer(
     auto_error=False,
