@@ -1,30 +1,45 @@
 """HTTP API over the scraped data. Runs independently of the scraper and only reads the
 SQLite database the scraper writes, except for queueing manual sync requests (`/sync`),
-which the scraper picks up."""
+which the scraper picks up.
+
+The OpenAPI spec is meant to stand on its own (handed to a person or an agent without the
+code), so keep summaries, descriptions and `schemas.py` in step with behavior."""
 
 from __future__ import annotations
 
 import shlex
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .. import config, storage
 from ..models import ItemKind
 from ..scraper import sources as _sources  # noqa: F401  (registers all sources)
 from ..scraper.base import REGISTRY
+from .schemas import (
+    DESCRIPTION, DONE_STATUSES, TAGS, Course, Grade, Health, Item, SourceStatus, SyncRequest,
+    errors,
+)
 
 app = FastAPI(
     title="lifeapi",
-    description="Schoolwork from every platform, in one place.",
+    summary="Schoolwork from every platform, in one place.",
+    description=DESCRIPTION,
     version="1.0.0",
+    openapi_tags=TAGS,
+)
+
+_bearer = HTTPBearer(
+    auto_error=False,
+    description="Required only when the server sets `LIFEAPI_API_TOKEN`.",
 )
 
 
-def require_token(authorization: str | None = Header(default=None)) -> None:
-    if config.API_TOKEN and authorization != f"Bearer {config.API_TOKEN}":
+def require_token(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> None:
+    if config.API_TOKEN and (creds is None or creds.credentials != config.API_TOKEN):
         raise HTTPException(401, "Missing or invalid bearer token")
 
 
@@ -44,6 +59,18 @@ def _iso(dt: datetime | None) -> str | None:
 
 
 Auth = Depends(require_token)
+READ_ERRORS = errors(401, 503)
+SOURCE_NAMES = ", ".join(f"`{s}`" for s in sorted(REGISTRY))
+
+
+def _source_param(repeatable: bool = False) -> Any:
+    more = " Repeat to match any of several." if repeatable else ""
+    return Query(None, description=f"Only records from this source: {SOURCE_NAMES}.{more}",
+                 examples=["google_classroom"])
+
+
+INCLUDE_INACTIVE = Query(False, description="Also return records that no longer appear on "
+                                            "their source (`active: false`).")
 
 
 def _login_command(source: str, error: str | None) -> str | None:
@@ -55,17 +82,21 @@ def _login_command(source: str, error: str | None) -> str | None:
     return f"python3 deploy/reauth.py {target} --only {shlex.quote(source)}"
 
 
-@app.get("/health")
-def health() -> dict[str, str]:
+@app.get("/health", tags=["status"], operation_id="health", summary="Liveness check")
+def health() -> Health:
+    """Always `{"status": "ok"}` while the API process is up. Needs no token and says nothing
+    about data freshness; use `GET /sources` for that."""
     return {"status": "ok"}
 
 
-@app.get("/sources", dependencies=[Auth])
-def sources(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
-    """Every registered source with its most recent scrape run (null if it has never run)
-    and its last successful one. `login_command` is set when the last run got stuck on a
-    sign-in challenge: run it from a checkout of this repository to finish the sign-in by
-    hand over VNC."""
+@app.get("/sources", dependencies=[Auth], tags=["status"], operation_id="listSources",
+         summary="List sources and their last scrape", responses=READ_ERRORS)
+def sources(conn: sqlite3.Connection = Depends(db)) -> list[SourceStatus]:
+    """Every source with its most recent scrape run (null if it has never run) and when it
+    last succeeded. Check `last_success_at` to see how fresh a source's data is; a failed run
+    keeps the previous data, so a source can be stale even though it returns records.
+    `login_command` is set when the last run got stuck on a sign-in challenge that a human
+    has to finish."""
     rows = {r["source"]: r for r in conn.execute(
         """SELECT r.* FROM scrape_runs r
            JOIN (SELECT source, MAX(run_id) AS run_id FROM scrape_runs GROUP BY source) last
@@ -97,14 +128,27 @@ def sources(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
 # The sync endpoints write, so they open their own read-write connection (which also
 # creates the table on a database the current scraper hasn't touched yet).
 
-@app.post("/sync", dependencies=[Auth], status_code=202)
+@app.post(
+    "/sync", dependencies=[Auth], status_code=202, tags=["status"], operation_id="requestSync",
+    summary="Ask the scraper to refresh now",
+    responses={200: {"model": SyncRequest, "description": "An equivalent request was already "
+                                                          "waiting; that one is returned."},
+               202: {"description": "Queued a new request."},
+               **errors(400, 401)},
+)
 def request_sync(
     response: Response,
-    source: list[str] | None = Query(None, description="Sources to sync (repeatable); omit for every enabled source"),
-) -> dict[str, Any]:
-    """Ask the scraper to sync now. It picks the request up within seconds if it's idle, or
-    after the current run. If a waiting request already covers these sources, that one is
-    returned (200) instead of queueing another (202). Poll `GET /sync/{request_id}`."""
+    source: list[str] | None = Query(
+        None, description=f"Sources to sync: {SOURCE_NAMES}. Repeat for several. Omit to sync "
+                          "every enabled source.", examples=["google_classroom"]),
+) -> SyncRequest:
+    """Queue a scrape. The scraper picks it up within seconds if it's idle, or after the run in
+    progress. A scrape takes from under a minute (one small source) to about 10 minutes
+    (everything), so poll `GET /sync/{request_id}` every 15–30 seconds until `status` is `done`
+    or `failed`, then re-read the data. If a waiting request already covers these sources, that
+    one is returned (200) instead of queueing another (202). Only call this when the user wants
+    fresher data than `GET /sources` shows; the data refreshes on its own every couple of
+    hours."""
     if source and (unknown := set(source) - REGISTRY.keys()):
         raise HTTPException(400, f"Unknown source(s): {', '.join(sorted(unknown))}. "
                                  f"Available: {', '.join(sorted(REGISTRY))}")
@@ -117,9 +161,12 @@ def request_sync(
     return storage.sync_request_to_dict(row)
 
 
-@app.get("/sync", dependencies=[Auth])
-def sync_requests(limit: int = Query(20, ge=1, le=200)) -> list[dict[str, Any]]:
-    """Recent sync requests, newest first. `status` is pending, running, done or failed."""
+@app.get("/sync", dependencies=[Auth], tags=["status"], operation_id="listSyncRequests",
+         summary="List recent sync requests", responses=errors(401))
+def sync_requests(
+    limit: int = Query(20, ge=1, le=200, description="How many to return."),
+) -> list[SyncRequest]:
+    """Recent manual sync requests, newest first."""
     with storage.connect() as conn:
         rows = conn.execute(
             "SELECT * FROM sync_requests ORDER BY request_id DESC LIMIT ?", (limit,)
@@ -127,8 +174,13 @@ def sync_requests(limit: int = Query(20, ge=1, le=200)) -> list[dict[str, Any]]:
     return [storage.sync_request_to_dict(r) for r in rows]
 
 
-@app.get("/sync/{request_id}", dependencies=[Auth])
-def sync_request(request_id: int) -> dict[str, Any]:
+@app.get("/sync/{request_id}", dependencies=[Auth], tags=["status"],
+         operation_id="getSyncRequest", summary="Get one sync request",
+         responses=errors(401, 404))
+def sync_request(
+    request_id: int = Path(description="`request_id` returned by `POST /sync`."),
+) -> SyncRequest:
+    """Poll this after `POST /sync` until `status` is `done` or `failed`."""
     with storage.connect() as conn:
         row = conn.execute("SELECT * FROM sync_requests WHERE request_id=?", (request_id,)).fetchone()
     if not row:
@@ -136,12 +188,15 @@ def sync_request(request_id: int) -> dict[str, Any]:
     return storage.sync_request_to_dict(row)
 
 
-@app.get("/courses", dependencies=[Auth])
+@app.get("/courses", dependencies=[Auth], tags=["courses"], operation_id="listCourses",
+         summary="List courses", responses=READ_ERRORS)
 def courses(
-    source: str | None = None,
-    include_inactive: bool = False,
+    source: str | None = _source_param(),
+    include_inactive: bool = INCLUDE_INACTIVE,
     conn: sqlite3.Connection = Depends(db),
-) -> list[dict[str, Any]]:
+) -> list[Course]:
+    """Every course on every source, sorted by source then name. Use a course's `source` and
+    `id` with `GET /items?source=…&course_id=…` to list its work."""
     sql, args = "SELECT * FROM courses WHERE 1=1", []
     if source:
         sql += " AND source=?"
@@ -152,23 +207,40 @@ def courses(
     return [storage.row_to_dict(r) for r in conn.execute(sql, args)]
 
 
-@app.get("/items", dependencies=[Auth])
+@app.get("/items", dependencies=[Auth], tags=["items"], operation_id="listItems",
+         summary="Search and filter items", responses=READ_ERRORS)
 def items(
-    source: list[str] | None = Query(None, description="Filter by source (repeatable)"),
-    kind: list[ItemKind] | None = Query(None, description="Filter by kind (repeatable)"),
-    course_id: str | None = None,
-    status: list[str] | None = Query(None, description="e.g. assigned, missing, turned_in"),
-    due_after: datetime | None = None,
-    due_before: datetime | None = None,
-    posted_after: datetime | None = None,
-    q: str | None = Query(None, description="Case-insensitive search in title/course"),
-    include_inactive: bool = False,
-    order: str = Query("due", pattern="^(due|posted|seen)$"),
-    limit: int = Query(200, le=2000),
-    offset: int = 0,
+    source: list[str] | None = _source_param(repeatable=True),
+    kind: list[ItemKind] | None = Query(None, description="Only these kinds. Repeat to match "
+                                                          "any of several."),
+    course_id: str | None = Query(None, description="Only items in this course. Course ids "
+                                                    "are per source, so pair with `source`."),
+    status: list[str] | None = Query(
+        None, description="Only these statuses, in the source's wording (e.g. `assigned`, "
+                          "`missing`, `turned_in`, `graded`, `completed`). Repeat to match any "
+                          "of several.", examples=["missing"]),
+    due_after: datetime | None = Query(None, description="Due at or after this time (ISO 8601; "
+                                                         "include an offset). Excludes items "
+                                                         "with no due date."),
+    due_before: datetime | None = Query(None, description="Due at or before this time (ISO "
+                                                          "8601; include an offset). Excludes "
+                                                          "items with no due date."),
+    posted_after: datetime | None = Query(None, description="Posted at or after this time "
+                                                            "(ISO 8601; include an offset)."),
+    q: str | None = Query(None, description="Case-insensitive substring match on `title` or "
+                                            "`course_name` (not the description).",
+                          examples=["essay"]),
+    include_inactive: bool = INCLUDE_INACTIVE,
+    order: Literal["due", "posted", "seen"] = Query(
+        "due", description="`due`: soonest deadline first, undated last. `posted`: newest "
+                           "first. `seen`: most recently discovered by the scraper first."),
+    limit: int = Query(200, le=2000, description="Maximum items to return."),
+    offset: int = Query(0, description="Items to skip, for paging."),
     conn: sqlite3.Connection = Depends(db),
-) -> list[dict[str, Any]]:
-    """Assignments, announcements, materials, questions — from every source."""
+) -> list[Item]:
+    """Assignments, quizzes, questions, materials and announcements from every source. Filters
+    combine with AND; a repeated filter matches any of its values. For "what's due" and
+    "what's overdue", `GET /items/upcoming` and `GET /items/missing` are simpler."""
     sql, args = "SELECT * FROM items WHERE 1=1", []
 
     def any_of(col: str, values: list[str]) -> None:
@@ -209,24 +281,31 @@ def items(
     return [storage.row_to_dict(r) for r in conn.execute(sql, args)]
 
 
-@app.get("/items/upcoming", dependencies=[Auth])
+@app.get("/items/upcoming", dependencies=[Auth], tags=["items"], operation_id="listUpcomingItems",
+         summary="List work due soon", responses=READ_ERRORS)
 def upcoming(
-    days: int = Query(14, ge=1, le=365),
-    include_done: bool = False,
+    days: int = Query(14, ge=1, le=365, description="How many days ahead to look."),
+    include_done: bool = Query(False, description="Also include work already marked finished "
+                                                  "(turned in, completed, graded…)."),
     conn: sqlite3.Connection = Depends(db),
-) -> list[dict[str, Any]]:
-    """Work due between now and `days` from now, soonest first."""
+) -> list[Item]:
+    """Items due between now and `days` from now, soonest first. By default leaves out work
+    already finished, so this is the to-do list."""
     now = datetime.now(timezone.utc)
     sql = "SELECT * FROM items WHERE active=1 AND due_at>=? AND due_at<=?"
     if not include_done:
-        sql += " AND (status IS NULL OR status NOT IN ('turned_in','completed','graded','done','returned','handed_in'))"
+        sql += f" AND (status IS NULL OR status NOT IN ({','.join('?' * len(DONE_STATUSES))}))"
     sql += " ORDER BY due_at"
-    return [storage.row_to_dict(r) for r in conn.execute(sql, (_iso(now), _iso(now + timedelta(days=days))))]
+    args = [_iso(now), _iso(now + timedelta(days=days))] + ([] if include_done else list(DONE_STATUSES))
+    return [storage.row_to_dict(r) for r in conn.execute(sql, args)]
 
 
-@app.get("/items/missing", dependencies=[Auth])
-def missing(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
-    """Work past due that isn't marked done anywhere."""
+@app.get("/items/missing", dependencies=[Auth], tags=["items"], operation_id="listMissingItems",
+         summary="List overdue work", responses=READ_ERRORS)
+def missing(conn: sqlite3.Connection = Depends(db)) -> list[Item]:
+    """Items past their deadline whose status is `missing`, `assigned` or empty (so not
+    turned in on the source), most recently due first. Announcements are excluded. Some
+    platforms keep old work listed long after it stops mattering, so expect a long tail."""
     now = datetime.now(timezone.utc)
     sql = """SELECT * FROM items WHERE active=1 AND due_at<? AND
              (status IN ('missing','assigned') OR status IS NULL) AND kind!='announcement'
@@ -234,12 +313,15 @@ def missing(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
     return [storage.row_to_dict(r) for r in conn.execute(sql, (_iso(now),))]
 
 
-@app.get("/announcements", dependencies=[Auth])
+@app.get("/announcements", dependencies=[Auth], tags=["items"], operation_id="listAnnouncements",
+         summary="List recent announcements", responses=READ_ERRORS)
 def announcements(
-    days: int = Query(14, ge=1, le=365),
-    source: str | None = None,
+    days: int = Query(14, ge=1, le=365, description="How many days back to look."),
+    source: str | None = _source_param(),
     conn: sqlite3.Connection = Depends(db),
-) -> list[dict[str, Any]]:
+) -> list[Item]:
+    """Items of kind `announcement` posted in the last `days` days, newest first. Only Google
+    Classroom has announcements today."""
     since = datetime.now(timezone.utc) - timedelta(days=days)
     sql, args = "SELECT * FROM items WHERE active=1 AND kind='announcement' AND posted_at>=?", [_iso(since)]
     if source:
@@ -249,21 +331,32 @@ def announcements(
     return [storage.row_to_dict(r) for r in conn.execute(sql, args)]
 
 
-@app.get("/items/{source}/{item_id}", dependencies=[Auth])
-def item(source: str, item_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+@app.get("/items/{source}/{item_id}", dependencies=[Auth], tags=["items"], operation_id="getItem",
+         summary="Get one item", responses=errors(401, 404, 503))
+def item(
+    source: str = Path(description=f"The item's `source`: {SOURCE_NAMES}."),
+    item_id: str = Path(description="The item's `id`."),
+    conn: sqlite3.Connection = Depends(db),
+) -> Item:
+    """One item by `(source, id)`, including inactive ones."""
     row = conn.execute("SELECT * FROM items WHERE source=? AND id=?", (source, item_id)).fetchone()
     if not row:
         raise HTTPException(404, "Item not found")
     return storage.row_to_dict(row)
 
 
-@app.get("/grades", dependencies=[Auth])
+@app.get("/grades", dependencies=[Auth], tags=["grades"], operation_id="listGrades",
+         summary="List course grades", responses=READ_ERRORS)
 def grades(
-    source: str | None = None,
-    term: str | None = None,
-    include_inactive: bool = False,
+    source: str | None = _source_param(),
+    term: str | None = Query(None, description="Only this term, exactly as it appears in "
+                                               "`term` (e.g. `MP1`).", examples=["MP1"]),
+    include_inactive: bool = INCLUDE_INACTIVE,
     conn: sqlite3.Connection = Depends(db),
-) -> list[dict[str, Any]]:
+) -> list[Grade]:
+    """Course grades, one per course × term × grading task, sorted by course then term. A course
+    usually has a `MARKING PERIOD` grade per term plus a running `FINAL AVERAGE`; `entries`
+    lists the scored assignments behind each one."""
     sql, args = "SELECT * FROM grades WHERE 1=1", []
     if source:
         sql += " AND source=?"
