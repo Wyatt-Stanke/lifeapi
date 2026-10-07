@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import math
 import re
-from datetime import datetime, timedelta
+from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 
 from patchright.async_api import Page
+from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from ... import config
 from ...models import Attachment, Comment, Course, Item, ItemKind, ScrapeResult
@@ -80,9 +84,18 @@ MORE_POSTS_JS = r"""([n, quiet]) => {
 }"""
 
 # An item's detail page is re-read if the classwork row changed, if it's "recent"
-# (anything can still change: grades, comments, status), or if the cached copy is old.
+# (anything can still change: grades, comments, status), or if the cached copy is old: a
+# day old, or a week for items due or posted over OLD ago, which hardly ever change.
 RECENT = timedelta(days=7)
 FULL_REFRESH = timedelta(hours=24)
+OLD = timedelta(days=90)
+OLD_REFRESH = timedelta(days=7)
+# Tabs reading detail pages. They work while the main tab reads the next class's list.
+DETAIL_TABS = 4
+# Streams are read down to the last announcement already known from an earlier run, and
+# older posts are carried over from the cache. A class's stream is read to the end, to
+# catch edits, comments and deletions on old posts, when its oldest cached post was last
+# read over FULL_REFRESH ago (or earlier, to spread these reads out: see `_due`).
 MAX_STREAM_SCROLLS = 100
 # Classroom shows the year on dates only when it isn't the current year.
 CY = "current_year"
@@ -101,15 +114,40 @@ class GoogleClassroom(Source):
     name = "google_classroom"
 
     async def scrape(self) -> ScrapeResult:
+        self._stale = self._stale_details()
+        self._full_streams = self._streams_due()
         page = await self.new_page()
+        details: asyncio.Queue[Item | None] = asyncio.Queue()
+        failed: set[str] = set()
+        workers = [asyncio.create_task(self._detail_worker(details, failed)) for _ in range(DETAIL_TABS)]
         try:
             with self.step("listing enrolled classes"):
                 courses = await self._courses(page)
             result = ScrapeResult(courses=courses)
+            fetching: list[Item] = []
             for course in courses:
                 try:
                     with self.step(f"reading classwork for {course.name}"):
-                        result.items += await self._classwork(page, course)
+                        items, to_fetch = await self._classwork(page, course)
+                except Exception:
+                    await dump_debug(page, f"google_classroom_{course.id}")
+                    raise
+                result.items += items
+                fetching += to_fetch
+                for item in to_fetch:
+                    details.put_nowait(item)
+            for _ in workers:
+                details.put_nowait(None)
+            await asyncio.gather(*workers)
+            for item in fetching:
+                # A failed refresh keeps last run's details rather than dropping them.
+                if item.id in failed and (prev := self.previous.get(item.id)):
+                    self._merge_cached(item, prev)
+                    item.extra["list_signature"] = prev.extra.get("list_signature")  # retry next run
+
+            await page.bring_to_front()  # _fill_detail may have brought a detail tab forward
+            for course in courses:
+                try:
                     with self.step(f"reading announcements for {course.name}"):
                         result.items += await self._announcements(page, course)
                 except Exception:
@@ -117,6 +155,9 @@ class GoogleClassroom(Source):
                     raise
             return result
         finally:
+            for w in workers:
+                w.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
             await page.close()
 
     # -- navigation -------------------------------------------------------------------
@@ -158,13 +199,14 @@ class GoogleClassroom(Source):
 
     # -- classwork --------------------------------------------------------------------
 
-    async def _classwork(self, page: Page, course: Course) -> list[Item]:
+    async def _classwork(self, page: Page, course: Course) -> tuple[list[Item], list[Item]]:
+        """The class's classwork items, and those of them whose detail page needs reading."""
         cid = b64(course.id)
         await page.goto(f"{BASE}/u/0/w/{cid}/t/all")
         rows_sel = "li[data-stream-item-id]"
         if await self._list_state(page, rows_sel, EMPTY_CLASSWORK) == "empty":
             self.log.info("%s: no classwork", course.name)
-            return []
+            return [], []
         # Topics show 10 items until "View more" is clicked.
         more = page.locator('button[aria-label="View more posts"]:visible')
         for _ in range(50):
@@ -222,25 +264,55 @@ class GoogleClassroom(Source):
             items.append(item)
 
         self.log.info("%s: %d classwork items, %d need detail", course.name, len(items), len(to_fetch))
-        results = await self.map_pages(to_fetch, self._fill_detail, concurrency=4)
-        for item, res in zip(to_fetch, results):
-            # A failed refresh keeps last run's details rather than dropping them.
-            if isinstance(res, BaseException) and (prev := self.previous.get(item.id)):
-                self._merge_cached(item, prev)
-                item.extra["list_signature"] = prev.extra.get("list_signature")  # retry next run
-        return items
+        return items, to_fetch
 
     def _needs_detail(self, item: Item, prev: Item | None) -> bool:
-        if prev is None:
+        if prev is None or "detail_fetched_at" not in prev.extra:
             return True
         if prev.extra.get("list_signature") != item.extra.get("list_signature"):
             return True
-        fetched = prev.extra.get("detail_fetched_at")
-        if not fetched or now() - datetime.fromisoformat(fetched) > FULL_REFRESH:
-            return True
-        cutoff = now() - RECENT
         when = item.due_at or prev.posted_at
-        return when is None or when >= cutoff
+        return when is None or when >= now() - RECENT or item.id in self._stale
+
+    def _due(self, cached: list[tuple[datetime, str]], limit: timedelta) -> list[str]:
+        """Which of `cached` ((last read, key) pairs) to re-read this run: all of those read
+        over `limit` ago, and at least the oldest share of them that the time since the last
+        run is of `limit`. Re-reading that share each run spreads the re-reads evenly over
+        runs, at any schedule, rather than letting them all come due in the same run."""
+        t = now()
+        cached = sorted(cached)
+        overdue = sum(t - at > limit for at, _ in cached)
+        since = t - self.last_run_at if self.last_run_at else timedelta(0)
+        share = math.ceil(len(cached) * max(0.0, min(since / limit, 1.0)))
+        return [key for _, key in cached[:max(overdue, share)]]
+
+    def _stale_details(self) -> set[str]:
+        """Cached classwork to re-read this run only because its cached detail is old."""
+        t = now()
+        tiers: dict[timedelta, list[tuple[datetime, str]]] = {FULL_REFRESH: [], OLD_REFRESH: []}
+        for prev in self.previous.values():
+            fetched = prev.extra.get("detail_fetched_at")
+            when = prev.due_at or prev.posted_at
+            if prev.kind == ItemKind.ANNOUNCEMENT or not fetched or not when or when >= t - RECENT:
+                continue  # never cached, or re-read every run anyway
+            limit = OLD_REFRESH if when < t - OLD else FULL_REFRESH
+            tiers[limit].append((datetime.fromisoformat(fetched), prev.id))
+        return {id_ for limit, cached in tiers.items() for id_ in self._due(cached, limit)}
+
+    async def _detail_worker(self, queue: asyncio.Queue[Item | None], failed: set[str]) -> None:
+        """Read detail pages from `queue` in a tab of its own until it yields None."""
+        page = None
+        try:
+            while (item := await queue.get()) is not None:
+                page = page or await self.new_page()
+                try:
+                    await self._fill_detail(page, item)
+                except Exception as e:
+                    self.log.warning("Failed on %r: %s", item, e)
+                    failed.add(item.id)
+        finally:
+            if page:
+                await page.close()
 
     @staticmethod
     def _merge_cached(item: Item, prev: Item) -> None:
@@ -304,16 +376,35 @@ class GoogleClassroom(Source):
 
     # -- announcements ----------------------------------------------------------------
 
+    def _streams_due(self) -> set[str]:
+        """Classes whose stream is read to the end this run, by when their oldest cached
+        post was last read."""
+        never = datetime.min.replace(tzinfo=timezone.utc)
+        oldest: dict[str, datetime] = {}
+        for prev in self.previous.values():
+            if prev.kind == ItemKind.ANNOUNCEMENT and prev.course_id:
+                at = prev.extra.get("read_at")
+                at = datetime.fromisoformat(at) if at else never
+                oldest[prev.course_id] = min(at, oldest.get(prev.course_id, at))
+        return set(self._due([(at, cid) for cid, at in oldest.items()], FULL_REFRESH))
+
     async def _announcements(self, page: Page, course: Course) -> list[Item]:
         cid = b64(course.id)
         await page.goto(f"{BASE}/u/0/c/{cid}")
         if await self._list_state(page, "[data-stream-item-id]", EMPTY_STREAM) == "empty":
             return []
+        cached = {i.id: i for i in self.previous.values()
+                  if i.kind == ItemKind.ANNOUNCEMENT and i.course_id == course.id}
+        full = course.id in self._full_streams or not cached
         # The stream lazy-loads older posts as you scroll. A scroll that lands while it's
         # still rendering or prefetching is ignored, so it has ended only after two quiet
-        # scrolls in a row.
+        # scrolls in a row. Short of a full read, it stops once the last announcement
+        # rendered is a cached one: posts are newest first, so new ones are all above it.
         quiet = 0
         for _ in range(MAX_STREAM_SCROLLS):
+            if not full and await page.evaluate(js.LAST_POST_JS) in cached:
+                await self._list_state(page, "[data-stream-item-id]", EMPTY_STREAM)  # let the last posts render
+                break
             n = await page.locator("[data-stream-item-id]").count()
             await page.evaluate("() => { delete window.__lifeapiQuiet; }")
             await page.mouse.wheel(0, 30_000)
@@ -329,7 +420,18 @@ class GoogleClassroom(Source):
         else:
             self.log.warning("%s: stopped after %d stream scrolls", course.name, MAX_STREAM_SCROLLS)
         posts = await page.evaluate(js.STREAM_JS)
+        # Attachments occasionally render late. A cached post showing fewer than last time
+        # gets until they appear, then the stream is read again. Fewer can also be a real
+        # edit, so running out of time isn't an error.
+        fewer = {p["id"]: len(cached[p["id"]].attachments) for p in posts
+                 if p["id"] in cached and len(p["attachments"]) < len(cached[p["id"]].attachments)}
+        if fewer:
+            self.log.debug("%s: waiting for attachments on %s", course.name, fewer)
+            with suppress(PlaywrightTimeoutError):
+                await page.wait_for_function(js.ATTACHMENTS_SHOWN_JS, arg=fewer, timeout=config.timeout(5_000))
+            posts = await page.evaluate(js.STREAM_JS)
 
+        read_at = now().isoformat()
         items: list[Item] = []
         with_comments: list[Item] = []
         for p in posts:
@@ -352,6 +454,7 @@ class GoogleClassroom(Source):
                     if v
                 },
             )
+            item.extra["read_at"] = read_at
             prev = self.previous.get(item.id)
             if p["comment_count"]:
                 if prev and prev.comments and prev.extra.get("comment_count") == p["comment_count"]:
@@ -361,8 +464,16 @@ class GoogleClassroom(Source):
             items.append(item)
 
         await self.map_pages(with_comments, self._fill_post_comments)
-        self.log.info("%s: %d announcements", course.name, len(items))
-        return items
+        if full:
+            self.log.info("%s: %d announcements", course.name, len(items))
+            return items
+        # Posts below where the read stopped are carried over as they were. One deleted
+        # since the last full read stays until the next one.
+        seen = {i.id for i in items}
+        older = [i for id_, i in cached.items() if id_ not in seen]
+        self.log.info("%s: %d announcements (%d read, %d cached)",
+                      course.name, len(items) + len(older), len(items), len(older))
+        return items + older
 
     async def _fill_post_comments(self, page: Page, item: Item) -> None:
         await page.goto(item.url)

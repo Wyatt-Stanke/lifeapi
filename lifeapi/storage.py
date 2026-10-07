@@ -276,6 +276,15 @@ def reset_schedule(conn: sqlite3.Connection, source: str) -> None:
     conn.commit()
 
 
+def last_full_run(conn: sqlite3.Connection, source: str) -> datetime | None:
+    """When `source`'s last successful full run started, or None if it hasn't had one."""
+    row = conn.execute(
+        "SELECT started_at FROM scrape_runs WHERE source=? AND ok=1 AND partial IS NULL"
+        " ORDER BY run_id DESC LIMIT 1", (source,)
+    ).fetchone()
+    return datetime.fromisoformat(row["started_at"]) if row else None
+
+
 def next_fetch(conn: sqlite3.Connection, source: str,
                schedule: dict[str, Any]) -> tuple[datetime | None, str | None]:
     """When `schedule` next fetches `source`, and which partial fetch that is (None: full).
