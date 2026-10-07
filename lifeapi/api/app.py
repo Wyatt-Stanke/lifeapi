@@ -422,7 +422,8 @@ def grades(
 ) -> list[Grade]:
     """Course grades, one per course × term × grading task, sorted by course then term. A course
     usually has a `MARKING PERIOD` grade per term plus a running `FINAL AVERAGE`; `entries`
-    lists the scored assignments behind each one."""
+    lists the scored assignments behind each one. Overall GPAs (e.g. `Cumulative GPA`) are also
+    listed here, with `gpa` set and no `course_id`."""
     sql, args = "SELECT * FROM grades WHERE 1=1", []
     if source:
         sql += " AND source=?"

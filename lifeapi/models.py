@@ -163,7 +163,9 @@ class GradeEntry(BaseModel):
 
 class Grade(BaseModel):
     """A course grade for one grading task in one term (e.g. "MP1 / MARKING PERIOD"). There is
-    one record per course × term × task."""
+    one record per course × term × task.
+
+    Overall GPAs (e.g. cumulative) use the same shape: `gpa` is set and `course_id` is null."""
 
     source: str = Field(description="Source that this record came from.", examples=["infinite_campus"])
     id: str = Field(description="Grade id, unique only within `source`.")
@@ -176,6 +178,9 @@ class Grade(BaseModel):
     letter: str | None = Field(None, description="Letter grade, if posted or computed.",
                                examples=["A-"])
     percent: float | None = Field(None, description="Grade as a percentage, 0–100.")
+    gpa: float | None = Field(None, description="Set only on overall GPA records (no course), on "
+                                                "the school's own scale (may be 0–100).",
+                              examples=[99.15])
     url: str | None = Field(None, description="Deep link to this grade on the source.")
     categories: list[dict[str, Any]] = Field(
         default_factory=list,
@@ -191,7 +196,8 @@ class Grade(BaseModel):
         description="Source-specific fields. `infinite_campus`: `points_earned`, "
                     "`points_possible`, `term_gpa`, `weight_percent`, `modified_at`, `posted` "
                     "(true once the teacher has posted the grade, rather than it being an "
-                    "in-progress calculation).",
+                    "in-progress calculation). On GPA records: `type` (e.g. `cumulative`), "
+                    "`weighted`, and `rank`/`out_of` when the school publishes them.",
     )
 
 

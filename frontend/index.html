@@ -327,12 +327,16 @@ function gradeTable(grades) {
 }
 
 async function viewGrades(params) {
-  const grades = await api("/grades");
+  const all = await api("/grades");
+  const gpas = all.filter((g) => g.gpa != null);
+  const grades = all.filter((g) => g.gpa == null);
   const terms = [...new Set(grades.map((g) => g.term).filter(Boolean))];
   const term = params.get("term") || "";
   const shown = term ? grades.filter((g) => g.term === term) : grades;
   return [
     h("h1", {}, "Grades"),
+    gpas.map((g) => h("p", {}, `${g.course_name}${g.term ? ` (${g.term})` : ""}: `, h("strong", {}, String(g.gpa)),
+      g.extra?.weighted === false ? " unweighted" : "", g.extra?.rank != null ? ` · rank ${g.extra.rank}${g.extra.out_of ? ` of ${g.extra.out_of}` : ""}` : "")),
     terms.length > 1 ? h("p", {}, "Term ", h("select", { onchange: (e) => { location.hash = "#/grades" + (e.target.value ? "?term=" + encodeURIComponent(e.target.value) : ""); } },
       h("option", { value: "" }, "All"), terms.map((t) => h("option", { value: t, selected: t === term }, t)))) : null,
     shown.length ? gradeTable(shown) : h("p", {}, h("em", {}, "No grades yet.")),
