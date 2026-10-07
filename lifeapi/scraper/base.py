@@ -40,6 +40,10 @@ class Source(ABC):
     # in the API and the explorer). `scrape()` checks `self.partial`. A partial result only
     # adds and updates records; anything it doesn't return stays as it was.
     partials: ClassVar[dict[str, str]] = {}
+    # Run in a headed (visible) browser by default rather than a headless one. Bot checks
+    # spot headless Chrome more easily. The API (`PUT /sources/{source}/browser`) overrides
+    # it per source; the runner launches headed sources in a browser of their own.
+    headed: ClassVar[bool] = False
 
     def __init__(self, context: BrowserContext, previous: dict[str, Item] | None = None,
                  partial: str | None = None):

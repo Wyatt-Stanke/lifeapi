@@ -1,5 +1,5 @@
-"""SQLite storage. The scraper writes; the API only reads, apart from sync requests and
-fetch schedules.
+"""SQLite storage. The scraper writes; the API only reads, apart from sync requests, fetch
+schedules and browser settings.
 
 Each record is stored as its full JSON document plus a few indexed columns used for
 filtering. When a source finishes a successful full scrape, anything from that source that
@@ -91,6 +91,13 @@ CREATE TABLE IF NOT EXISTS schedules (
     interval_minutes INTEGER NOT NULL,
     partial TEXT,
     full_every INTEGER,
+    updated_at TEXT NOT NULL
+);
+-- Per-source browser settings set through the API. A source without a row uses its own
+-- default (`Source.headed`).
+CREATE TABLE IF NOT EXISTS browser_settings (
+    source TEXT PRIMARY KEY,
+    headed INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
 """
@@ -294,6 +301,30 @@ def next_fetch(conn: sqlite3.Connection, source: str,
     return at, schedule["partial"] if since < schedule["full_every"] - 1 else None
 
 
+def get_browser(conn: sqlite3.Connection, source: str, default_headed: bool) -> dict[str, Any]:
+    """How `source`'s browser runs: the setting made through the API, else the source's
+    default (`default_headed`)."""
+    row = conn.execute("SELECT headed FROM browser_settings WHERE source=?", (source,)).fetchone()
+    if row is None:
+        return {"headed": default_headed, "default": True}
+    return {"headed": bool(row["headed"]), "default": False}
+
+
+def set_browser(conn: sqlite3.Connection, source: str, headed: bool) -> None:
+    conn.execute(
+        """INSERT INTO browser_settings (source, headed, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT (source) DO UPDATE SET
+             headed=excluded.headed, updated_at=excluded.updated_at""",
+        (source, int(headed), now_iso()),
+    )
+    conn.commit()
+
+
+def reset_browser(conn: sqlite3.Connection, source: str) -> None:
+    conn.execute("DELETE FROM browser_settings WHERE source=?", (source,))
+    conn.commit()
+
+
 def request_sync(conn: sqlite3.Connection, sources: list[str] | None) -> tuple[int, bool]:
     """Queue a sync of `sources` (None: every enabled source). Returns (request_id, created).
     A request already waiting that covers the same sources is returned instead of a new one."""
@@ -400,5 +431,6 @@ __all__ = [
     "finish_run", "save_result", "row_to_dict", "now_iso", "request_sync",
     "pending_sync_requests", "start_sync_requests", "finish_sync_request",
     "abandon_sync_requests", "sync_request_to_dict", "clear_sync_requests", "run_to_dict",
-    "get_schedule", "set_schedule", "reset_schedule", "next_fetch",
+    "get_schedule", "set_schedule", "reset_schedule", "next_fetch", "get_browser",
+    "set_browser", "reset_browser",
 ]

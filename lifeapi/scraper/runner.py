@@ -4,7 +4,11 @@
 A run also settles the manual sync requests (`POST /sync`) whose sources it fetches in full.
 `requested=True` runs exactly the sources that are waiting in requests, and nothing if none
 are. `due=True` runs the sources their schedules (`PUT /sources/{source}/schedule`) say are
-due, each in full or as the scheduled partial fetch, and nothing if none are."""
+due, each in full or as the scheduled partial fetch, and nothing if none are.
+
+Sources run headless unless set to headed (`Source.headed`, or `PUT
+/sources/{source}/browser`). Headed ones get a browser launch of their own, after the
+headless ones; both use the same profile, so sign-ins carry over."""
 
 from __future__ import annotations
 
@@ -48,6 +52,16 @@ def _expand(sources: list[str] | None) -> set[str]:
     return set(sources) if sources is not None else {n for n, c in REGISTRY.items() if c.enabled}
 
 
+def _headless(conn, cls: type[Source], forced: bool | None) -> bool:
+    """Whether `cls` runs headless: `forced` (`--headed`) if set, headed for every source
+    with LIFEAPI_HEADLESS=0, else the source's own setting."""
+    if forced is not None:
+        return forced
+    if not config.HEADLESS:
+        return False
+    return not storage.get_browser(conn, cls.name, cls.headed)["headed"]
+
+
 def _due(conn) -> dict[str, str | None]:
     """Enabled sources their schedules say are due now, each with the partial fetch to run
     (None: a full one)."""
@@ -64,7 +78,8 @@ def _due(conn) -> dict[str, str | None]:
 async def run(only: list[str] | None = None, headless: bool | None = None,
               requested: bool = False, due: bool = False, partial: str | None = None) -> bool:
     """Scrape the selected sources, in full or (`partial`, or as scheduled with `due`) as a
-    partial fetch. Returns True if all of them succeeded."""
+    partial fetch. `headless` forces every source headless or headed; None follows each
+    source's setting. Returns True if all of them succeeded."""
     if only:
         unknown = set(only) - REGISTRY.keys()
         if unknown:
@@ -113,12 +128,19 @@ async def run(only: list[str] | None = None, headless: bool | None = None,
         if claimed:
             log.info("Covering sync request(s) %s", ", ".join(map(str, claimed)))
 
+        # Headless sources first, then headed ones, each group in one browser launch.
+        groups: dict[bool, list[tuple[type[Source], str | None]]] = {True: [], False: []}
+        for cls, part in selected:
+            groups[_headless(conn, cls, headless)].append((cls, part))
         errors: dict[str, str] = {}
         try:
-            async with browser_context(headless=headless) as ctx:
-                for cls, part in selected:
-                    if error := await _run_one(conn, ctx, cls, part):
-                        errors[cls.name] = error
+            for mode, group in groups.items():
+                if not group:
+                    continue
+                async with browser_context(headless=mode) as ctx:
+                    for cls, part in group:
+                        if error := await _run_one(conn, ctx, cls, part):
+                            errors[cls.name] = error
         except Exception as e:
             for i in claimed:
                 storage.finish_sync_request(conn, i, f"{type(e).__name__}: {e}")

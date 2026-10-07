@@ -1,7 +1,7 @@
 """HTTP API over the scraped data. Runs independently of the scraper and only reads the
 SQLite database the scraper writes, except for queueing and clearing manual sync requests
-(`/sync`) and setting fetch schedules (`/sources/{source}/schedule`), which the scraper
-picks up.
+(`/sync`) and setting fetch schedules (`/sources/{source}/schedule`) and browser settings
+(`/sources/{source}/browser`), which the scraper picks up.
 
 The OpenAPI spec is meant to stand on its own (handed to a person or an agent without the
 code), so keep summaries, descriptions and `schemas.py` in step with behavior."""
@@ -22,8 +22,9 @@ from ..models import GPA_PLACES, ItemKind
 from ..scraper import sources as _sources  # noqa: F401  (registers all sources)
 from ..scraper.base import REGISTRY, Source
 from .schemas import (
-    DESCRIPTION, DONE_STATUSES, TAGS, ClearedSyncRequests, Course, Error, Grade, Health, Item,
-    Run, RunDetail, Schedule, ScheduleSettings, SourceStatus, SyncRequest, errors,
+    DESCRIPTION, DONE_STATUSES, TAGS, Browser, BrowserSettings, ClearedSyncRequests, Course,
+    Error, Grade, Health, Item, Run, RunDetail, Schedule, ScheduleSettings, SourceStatus,
+    SyncRequest, errors,
 )
 
 app = FastAPI(
@@ -122,13 +123,19 @@ def _schedule(conn: sqlite3.Connection, name: str) -> dict[str, Any]:
             "next_fetch_partial": partial}
 
 
+def _browser(conn: sqlite3.Connection, name: str) -> dict[str, Any]:
+    """`name`'s effective browser setting (see `Browser`)."""
+    cls = REGISTRY.get(name)
+    return storage.get_browser(conn, name, cls.headed if cls else False)
+
+
 @app.get("/sources", dependencies=[Auth], tags=["status"], operation_id="listSources",
          summary="List sources, their schedules and last scrape", responses=READ_ERRORS)
 def sources(conn: sqlite3.Connection = Depends(db)) -> list[SourceStatus]:
-    """Every source with its fetch schedule, its most recent scrape run (null if it has never
-    run) and when it last succeeded. Check `last_success_at` to see how fresh a source's data
-    is; a failed run keeps the previous data, so a source can be stale even though it returns
-    records. `login_command` is set when the last run got stuck on a sign-in challenge that a
+    """Every source with its fetch schedule, its browser setting, its most recent scrape run
+    (null if it has never run) and when it last succeeded. Check `last_success_at` to see
+    how fresh a source's data is; a failed run keeps the previous data, so a source can be
+    stale even though it returns records. `login_command` is set when the last run got stuck on a sign-in challenge that a
     human has to finish. A failed run with `has_log` has a step-by-step log at
     `GET /runs/{run_id}/log`."""
     rows = {r["source"]: r for r in conn.execute(
@@ -150,6 +157,7 @@ def sources(conn: sqlite3.Connection = Depends(db)) -> list[SourceStatus]:
             "enabled": name in REGISTRY and REGISTRY[name].enabled,
             "partials": [{"name": k, "description": v} for k, v in partials.items()],
             "schedule": _schedule(conn, name),
+            "browser": _browser(conn, name),
             "last_run": r and storage.run_to_dict(r),
             "last_success_at": ok["finished_at"] if ok else None,
             "login_command": _login_command(name, r and r["error"]),
@@ -157,10 +165,11 @@ def sources(conn: sqlite3.Connection = Depends(db)) -> list[SourceStatus]:
     return out
 
 
-# The schedule endpoints write, so like /sync they open their own read-write connection.
+# The schedule and browser endpoints write, so like /sync they open their own read-write
+# connection.
 
 SOURCE_PATH = Path(description=f"Source name: {SOURCE_NAMES}.", examples=["infinite_campus"])
-SCHEDULE_ERRORS = {404: {"model": Error, "description": "No source with that name."}}
+SOURCE_ERRORS = {404: {"model": Error, "description": "No source with that name."}}
 
 
 def _source(name: str) -> type[Source]:
@@ -171,7 +180,7 @@ def _source(name: str) -> type[Source]:
 
 @app.put("/sources/{source}/schedule", dependencies=[Auth], tags=["status"],
          operation_id="setSchedule", summary="Set how often a source is fetched",
-         responses={**errors(400, 401), **SCHEDULE_ERRORS})
+         responses={**errors(400, 401), **SOURCE_ERRORS})
 def set_schedule(settings: ScheduleSettings, source: str = SOURCE_PATH) -> Schedule:
     """Fetch `source` every `interval_minutes`. With `partial` and `full_every`, every
     `full_every`th fetch is full and the others do only that partial fetch (one of the
@@ -193,7 +202,7 @@ def set_schedule(settings: ScheduleSettings, source: str = SOURCE_PATH) -> Sched
 
 @app.delete("/sources/{source}/schedule", dependencies=[Auth], tags=["status"],
             operation_id="resetSchedule", summary="Restore a source's default schedule",
-            responses={**errors(401), **SCHEDULE_ERRORS})
+            responses={**errors(401), **SOURCE_ERRORS})
 def reset_schedule(source: str = SOURCE_PATH) -> Schedule:
     """Go back to the server's default: a full fetch every couple of hours (see the returned
     `interval_minutes`). Returns the default schedule."""
@@ -201,6 +210,31 @@ def reset_schedule(source: str = SOURCE_PATH) -> Schedule:
     with storage.connect() as conn:
         storage.reset_schedule(conn, source)
         return _schedule(conn, source)
+
+
+@app.put("/sources/{source}/browser", dependencies=[Auth], tags=["status"],
+         operation_id="setBrowser", summary="Set whether a source runs in a headed browser",
+         responses={**errors(401), **SOURCE_ERRORS})
+def set_browser(settings: BrowserSettings, source: str = SOURCE_PATH) -> Browser:
+    """Run `source` in a headed (visible) browser, or a headless one, from its next fetch on.
+    A headed browser gets past bot checks (such as Cloudflare's on `vhl`) that stop a headless
+    one; on a server it runs on a virtual display. Returns the new setting."""
+    _source(source)
+    with storage.connect() as conn:
+        storage.set_browser(conn, source, settings.headed)
+        return _browser(conn, source)
+
+
+@app.delete("/sources/{source}/browser", dependencies=[Auth], tags=["status"],
+            operation_id="resetBrowser", summary="Restore a source's default browser",
+            responses={**errors(401), **SOURCE_ERRORS})
+def reset_browser(source: str = SOURCE_PATH) -> Browser:
+    """Go back to the source's own default (`vhl` is headed, the others headless). Returns the
+    default setting."""
+    _source(source)
+    with storage.connect() as conn:
+        storage.reset_browser(conn, source)
+        return _browser(conn, source)
 
 
 # The sync endpoints write, so they open their own read-write connection (which also
