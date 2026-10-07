@@ -22,7 +22,7 @@ from ... import config
 from ...models import Course, Item, ItemKind, ScrapeResult
 from ..auth.collegeboard import collegeboard_login, is_collegeboard_login_url, on_collegeboard_login
 from ..base import Source, register
-from ..browser import dump_debug
+from ..browser import dump_debug, wait_for_url
 from ..dates import now
 
 BASE = "https://apclassroom.collegeboard.org"
@@ -86,13 +86,16 @@ class APClassroom(Source):
         try:
             await page.goto(BASE)
             # Either the app loads (session still valid) or we bounce through the CB login.
-            await page.wait_for_url(
+            # With an expired session the app can cancel its first redirect to the login
+            # and start another, which wait_for_url rides out.
+            await wait_for_url(
+                page,
                 lambda u: is_collegeboard_login_url(u) or "/subjects" in u or "/assignments" in u,
                 timeout=config.timeout(45_000),
             )
             if on_collegeboard_login(page):
                 await collegeboard_login(page)
-                await page.wait_for_url(lambda u: "apclassroom.collegeboard.org" in u, timeout=config.timeout(45_000))
+                await wait_for_url(page, lambda u: "apclassroom.collegeboard.org" in u, timeout=config.timeout(45_000))
             if not await _wait_event(got_profile):
                 # Loaded from cache before we were listening: reload once.
                 await page.reload()

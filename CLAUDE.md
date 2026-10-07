@@ -70,6 +70,9 @@ College Board API responses contain access tokens, so delete scratch captures wh
   Never treat a timeout as "empty": wait for the page's explicit empty state instead,
   because returning no items soft-deletes them. `browser.wait_until()` races a locator
   against a URL; `browser.wait_gone()` confirms a submitted login step went away.
+  `browser.wait_for_url()` is `page.wait_for_url` for redirect chains: Playwright's
+  rejects on any aborted navigation (`net::ERR_ABORTED; maybe frame was detached?`), even
+  one the site cancels itself before redirecting elsewhere, as College Board's does.
 - `browser.dump_debug()` writes a screenshot and HTML to `data/debug/`. Sources call it
   before re-raising on unexpected pages.
 - Error context: wrap phases in `with self.step("reading X"):`. An exception escaping it
@@ -238,6 +241,11 @@ restores the default. The explorer edits it in the Sync status page's Browser co
   `config.timeout(30_000)`, it saves a debug snapshot and raises `LoginError`, so
   `/sources` offers `reauth.py`. A clearance lasts as long as the site's Cloudflare
   settings allow, from the same IP.
+- Turnstile replaces its iframe when it resets the widget, and the iframe is out of
+  process, so a locator call in flight on the old one fails with `TargetClosedError`
+  ("Target page, context or browser has been closed") while the page is fine.
+  `pass_challenge` looks for the checkbox again then (`_widget_gone`). In a run's trail,
+  tabs closing right after the error are the source's own `finally:` cleanup, not the cause.
 - To test it without a real challenge, serve a page titled "Just a moment..." that embeds
   Turnstile with Cloudflare's test sitekey `3x00000000000000000000FF` (forces the
   checkbox) or `2x00000000000000000000AB` (never passes). Test keys work on localhost.
