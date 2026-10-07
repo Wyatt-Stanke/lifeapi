@@ -133,10 +133,10 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   because FastAPI opens the per-request connection (the `db()` dependency) and uses it on
   different threadpool threads.
 - `api/app.py`: FastAPI, read-only apart from `/sync`. The optional `LIFEAPI_API_TOKEN`
-  bearer auth applies to everything except `/health`. Every list endpoint hides inactive
-  rows unless `include_inactive=true`. The API imports the scraper's `REGISTRY` (to
-  validate sync requests and list never-run sources in `/sources`), but never opens a
-  browser.
+  bearer auth applies to everything except `/health` and `/gpa` (public so `/biggpa` works on
+  any device). Every list endpoint hides inactive rows unless `include_inactive=true`. The
+  API imports the scraper's `REGISTRY` (to validate sync requests and list never-run sources
+  in `/sources`), but never opens a browser.
 - The OpenAPI spec (`/openapi.json`) is meant to be handed to a person or agent on its own,
   so it's the API's documentation. The overview (common questions, sources, ids, statuses,
   time zones) is `DESCRIPTION` in `api/schemas.py`. Field docs are the `Field(description=)`s
@@ -195,8 +195,8 @@ Search, Sync status with sync buttons), not an endpoint browser. Raw API access 
   browser refresh. Changes to `serve.py` need a restart.
 - `biggpa.html` (`/biggpa`) is the one styled page: `GET /api/gpa` in large Inter (Google
   Fonts), black on white, sized to the window by `fit()`, re-fetched every 5 minutes (a failed
-  refresh keeps the last value). It reads the token the explorer
-  saves in `localStorage` (`lifeapi-token`).
+  refresh keeps the last value). It sends no token (`/gpa` needs none), so it works on any
+  device.
 - `index.html` holds all the JS in one inline script. A tiny `h(tag, attrs, ...kids)`
   helper builds the DOM. Views are async functions that return nodes, and the hash router
   calls them as `view(...pathArgs, params)`. Routes are `#/item/<source>/<id>`,

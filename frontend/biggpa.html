@@ -62,8 +62,7 @@ function fit() {
   out.style.fontSize = `${Math.min(size, innerHeight * 0.8)}px`;
 }
 
-const ERRORS = { 401: "Set the API token in the explorer", 404: "No GPA yet", 502: "API unreachable",
-                 503: "No data yet" };
+const ERRORS = { 404: "No GPA yet", 502: "API unreachable", 503: "No data yet" };
 let shown = false;
 
 function show(text, message) {
@@ -79,10 +78,8 @@ function fail(message) {
 }
 
 async function load() {
-  let token = "";
-  try { token = localStorage.getItem("lifeapi-token") || ""; } catch {}  // set on the explorer page
   try {
-    const res = await fetch("/api/gpa", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const res = await fetch("/api/gpa");
     if (!res.ok) return fail(ERRORS[res.status] || `Error ${res.status}`);
     show(new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(await res.json()), "Percent");
     shown = true;

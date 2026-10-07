@@ -437,16 +437,17 @@ def grades(
     return [storage.row_to_dict(r) for r in conn.execute(sql, args)]
 
 
-@app.get("/gpa", dependencies=[Auth], tags=["grades"], operation_id="getGpa",
+@app.get("/gpa", tags=["grades"], operation_id="getGpa",
          summary="Get the overall GPA as a percentage",
          responses={404: {"model": Error, "description": "No GPA has been scraped yet."},
-                    **errors(401, 503)})
+                    **errors(503)})
 def gpa(conn: sqlite3.Connection = Depends(db)) -> float:
     """The overall GPA as a bare JSON number, e.g. `99.15`. This school's GPA is already a
     percentage (as Infinite Campus shows it), so the value is the GPA as published. It's
     weighted, so honors and AP courses can lift it above 100. When several GPA records
-    exist, this is the cumulative weighted one. 404 until a GPA has been scraped. Every GPA
-    record (term, unweighted, rank) is in `GET /grades`, with `gpa` set."""
+    exist, this is the cumulative weighted one. 404 until a GPA has been scraped. Needs no
+    token, so a display like the explorer's `/biggpa` page works on any device. Every GPA
+    record (term, unweighted, rank) is in `GET /grades`, with `gpa` set, behind the token."""
     rows = conn.execute(
         "SELECT * FROM grades WHERE active=1 AND json_extract(data, '$.gpa') IS NOT NULL"
     )
