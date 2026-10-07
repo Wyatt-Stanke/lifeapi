@@ -21,8 +21,8 @@ from ..models import ItemKind
 from ..scraper import sources as _sources  # noqa: F401  (registers all sources)
 from ..scraper.base import REGISTRY
 from .schemas import (
-    DESCRIPTION, DONE_STATUSES, TAGS, ClearedSyncRequests, Course, Grade, Health, Item, Run,
-    RunDetail, SourceStatus, SyncRequest, errors,
+    DESCRIPTION, DONE_STATUSES, TAGS, ClearedSyncRequests, Course, Error, Grade, Health, Item,
+    Run, RunDetail, SourceStatus, SyncRequest, errors,
 )
 
 app = FastAPI(
@@ -435,3 +435,25 @@ def grades(
         sql += " AND active=1"
     sql += " ORDER BY course_name, term"
     return [storage.row_to_dict(r) for r in conn.execute(sql, args)]
+
+
+@app.get("/gpa", dependencies=[Auth], tags=["grades"], operation_id="getGpa",
+         summary="Get the overall GPA as a percentage",
+         responses={404: {"model": Error, "description": "No GPA has been scraped yet."},
+                    **errors(401, 503)})
+def gpa(conn: sqlite3.Connection = Depends(db)) -> float:
+    """The overall GPA as a bare JSON number on a 0–100 scale, e.g. `99.15`. This school's
+    GPA is already a percentage (Infinite Campus shows it on 0–100), so the value is the GPA
+    as published. When several GPA records exist, this is the cumulative weighted one. 404
+    until a GPA has been scraped. Every GPA record (term, unweighted, rank) is in
+    `GET /grades`, with `gpa` set."""
+    rows = conn.execute(
+        "SELECT * FROM grades WHERE active=1 AND json_extract(data, '$.gpa') IS NOT NULL"
+    )
+    records = [storage.row_to_dict(r) for r in rows]
+    if not records:
+        raise HTTPException(404, "No GPA yet")
+    best = max(records, key=lambda g: (g["extra"].get("type") == "cumulative",
+                                       g["extra"].get("weighted", True),
+                                       g["extra"].get("calendar_id") or 0))
+    return best["gpa"]
