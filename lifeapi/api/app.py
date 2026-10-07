@@ -439,7 +439,11 @@ def grades(
 
 @app.get("/gpa", tags=["grades"], operation_id="getGpa", response_model=float,
          summary="Get the overall GPA as a percentage",
-         responses={404: {"model": Error, "description": "No GPA has been scraped yet."},
+         responses={200: {"headers": {"X-Last-Seen-At": {
+                        "description": "When the scraper last read this GPA from the source (the "
+                                       "record's `last_seen_at`), as a UTC ISO 8601 time.",
+                        "schema": {"type": "string", "format": "date-time"}}}},
+                    404: {"model": Error, "description": "No GPA has been scraped yet."},
                     **errors(503)})
 def gpa(conn: sqlite3.Connection = Depends(db)) -> Response:
     """The overall GPA as a bare JSON number, always written with three decimal places, e.g.
@@ -447,9 +451,10 @@ def gpa(conn: sqlite3.Connection = Depends(db)) -> Response:
     it. This school's GPA is already a percentage (as Infinite Campus shows it, to three
     places), so the value is the GPA as published. It's weighted, so honors and AP courses
     can lift it above 100. When several GPA records exist, this is the cumulative weighted
-    one. 404 until a GPA has been scraped. Needs no token, so a display like the explorer's
-    `/biggpa` page works on any device. Every GPA record (term, unweighted, rank) is in
-    `GET /grades`, with `gpa` set, behind the token."""
+    one. The `X-Last-Seen-At` header says when it was last read from the source. 404 until a
+    GPA has been scraped. Needs no token, so a display like the explorer's `/biggpa` page
+    works on any device. Every GPA record (term, unweighted, rank) is in `GET /grades`, with
+    `gpa` set, behind the token."""
     rows = conn.execute(
         "SELECT * FROM grades WHERE active=1 AND json_extract(data, '$.gpa') IS NOT NULL"
     )
@@ -460,4 +465,5 @@ def gpa(conn: sqlite3.Connection = Depends(db)) -> Response:
                                        g["extra"].get("weighted", True),
                                        g["extra"].get("calendar_id") or 0))
     # Written by hand: serializing the float would drop trailing zeros (99.150 -> 99.15).
-    return Response(f"{best['gpa']:.{GPA_PLACES}f}", media_type="application/json")
+    return Response(f"{best['gpa']:.{GPA_PLACES}f}", media_type="application/json",
+                    headers={"X-Last-Seen-At": best["last_seen_at"]})
