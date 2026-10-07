@@ -14,7 +14,7 @@ from urllib.parse import urlencode, urlparse
 from patchright.async_api import Page
 
 from ... import config
-from ...models import Course, Grade, GradeEntry, ScrapeResult
+from ...models import GPA_PLACES, Course, Grade, GradeEntry, ScrapeResult
 from ..auth.google import LoginError, google_login, is_google_login_url, on_google_login
 from ..base import Source, register
 from ..browser import dump_debug
@@ -25,6 +25,12 @@ def _num(v: Any) -> float | None:
         return None if v is None or v == "" else float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _gpa_num(v: Any) -> float | None:
+    # e.g. "99.150" -> 99.15, which is the same value to all GPA_PLACES places.
+    n = _num(v)
+    return None if n is None else round(n, GPA_PLACES)
 
 
 def _clean(s: Any) -> str | None:
@@ -155,13 +161,13 @@ class InfiniteCampus(Source):
             course_name=_clean(g.get("gpaName")) or f"{kind} GPA",
             term=term,
             task=f"{kind} GPA",
-            gpa=_num(g.get("gpa")),
+            gpa=_gpa_num(g.get("gpa")),
             url=self._url("grades"),
             extra={
                 k: v for k, v in {
                     "type": kind.lower(),
                     "weighted": not g.get("unweighted"),
-                    "gpa_with_bonus": _num(g.get("gpaBonus")),
+                    "gpa_with_bonus": _gpa_num(g.get("gpaBonus")),
                     "bonus_points": _num(g.get("bonusPoints")),
                     "rank": g.get("rank"),
                     "rank_with_bonus": g.get("rankBonus"),
