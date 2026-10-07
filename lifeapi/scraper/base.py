@@ -13,6 +13,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Awaitable, Callable, ClassVar, Iterable, Iterator, TypeVar
 
 from patchright.async_api import BrowserContext, Page
@@ -46,13 +47,16 @@ class Source(ABC):
     headed: ClassVar[bool] = False
 
     def __init__(self, context: BrowserContext, previous: dict[str, Item] | None = None,
-                 partial: str | None = None):
+                 partial: str | None = None, last_run_at: datetime | None = None):
         self.context = context
         # Items this source produced on earlier runs, keyed by id. Lets a source skip
         # re-fetching detail pages for things that haven't changed.
         self.previous = previous or {}
         # One of `partials` for a partial fetch, None for a full one.
         self.partial = partial
+        # When the last successful full run started (None if there hasn't been one), so a
+        # source can pace periodic re-reads to however often it actually runs.
+        self.last_run_at = last_run_at
         self.log = logging.getLogger(f"lifeapi.source.{self.name}")
 
     @abstractmethod

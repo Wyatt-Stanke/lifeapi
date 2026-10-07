@@ -178,7 +178,8 @@ async def _run_one(conn, ctx, cls: type[Source], partial: str | None = None) -> 
     run_id = storage.start_run(conn, cls.name, partial)
     with Trail(ctx) as trail:
         try:
-            source = cls(ctx, previous=_previous_items(conn, cls.name), partial=partial)
+            source = cls(ctx, previous=_previous_items(conn, cls.name), partial=partial,
+                         last_run_at=storage.last_full_run(conn, cls.name))
             result = await source.scrape()
         except Exception as e:
             error = describe_error(e, trail.last_url)

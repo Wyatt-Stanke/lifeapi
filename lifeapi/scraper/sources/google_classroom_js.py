@@ -162,6 +162,30 @@ DETAIL_JS = r"""
 }
 """
 
+# Course stream: the id of the last announcement rendered so far (the same elements
+# STREAM_JS reads), or null.
+LAST_POST_JS = r"""
+() => {
+  const posts = [...document.querySelectorAll('[data-stream-item-id][data-include-stream-item-materials="false"]')]
+    .filter(el => /^Post by /.test(el.innerText.trim()));
+  return posts.length ? posts[posts.length - 1].dataset.streamItemId : null;
+}
+"""
+
+# Course stream: whether each post in `want` ({id: n}) shows at least n attachments
+# (counted as STREAM_JS counts them).
+ATTACHMENTS_SHOWN_JS = r"""
+want => Object.entries(want).every(([id, n]) => {
+  const el = document.querySelector(`[data-stream-item-id="${id}"][data-include-stream-item-materials="false"]`);
+  if (!el) return false;
+  const scope = el.parentElement || el;
+  const urls = [...scope.querySelectorAll('a[aria-label^="Attachment"]')]
+    .filter(a => { const s = a.closest('[data-stream-item-id]'); return s && s.dataset.streamItemId === id; })
+    .map(a => a.href);
+  return new Set(urls).size >= n;
+})
+"""
+
 # Course stream (/u/0/c/<course>): announcements ("Post by ...").
 STREAM_JS = r"""
 () => {

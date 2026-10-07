@@ -28,10 +28,12 @@ sqlite3 data/lifeapi.db "select kind, status, count(*) from items where source='
 ```
 
 There's no test suite or linter. To verify a change, run the affected source with
-`--only`, then query `data/lifeapi.db` or hit the API. A full Google Classroom run takes
-5–8 minutes (`google_classroom` re-reads detail pages selectively; see below). To force
+`--only`, then query `data/lifeapi.db` or hit the API. A Google Classroom run takes about
+2 minutes with a warm cache, and up to about 7 when it re-reads everything
+(`google_classroom` re-reads detail pages and streams selectively; see below). To force
 Classroom to re-read every detail page, clear the cache marker:
 `update items set data=json_remove(data,'$.extra.detail_fetched_at') where source='google_classroom'`.
+For every stream in full, clear `$.extra.read_at` the same way.
 
 Only one scraper process can use the browser profile (`data/browser-profile/`) at a time.
 `runner.run()` holds `data/run.lock` (flock) for the whole run, so a second scraper run
@@ -118,9 +120,10 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
     teacher's, `1` is the student's.
   - Classroom redirects `/a/<id>` to `/mc/` or `/sa/` in-app and leaves the old view in
     the DOM, hidden. Always select the *visible* header and status elements.
-  - Detail pages are read in parallel tabs. `browser.py` passes flags that keep
-    background tabs rendering; without them, `innerText` comes back unrendered (run-on
-    text, empty fields).
+  - Detail pages are read in parallel tabs (`_detail_worker`), while the main tab goes on
+    to the next class's list. Streams are read after every detail page is done.
+    `browser.py` passes flags that keep background tabs rendering; without them,
+    `innerText` comes back unrendered (run-on text, empty fields).
   - Detail headers render in stages (author • date, then points, then category), and
     nothing marks points as pending, so `DETAIL_READY_JS` also waits for the header to
     stop changing. Reading early stores `points_possible=None`. The classwork list is the
@@ -131,8 +134,17 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
     them. Normalise whitespace before matching one against the other.
   - Incremental refresh (`_needs_detail`): a detail page is re-read when the item is new,
     its classwork-row signature changed, it's due or posted in the last 7 days, or its
-    cached detail is more than 24h old. Otherwise cached fields are merged from
-    `self.previous`.
+    cached detail is more than 24h old (7 days for items due or posted over 90 days ago).
+    Otherwise cached fields are merged from `self.previous`.
+  - Incremental streams (`_announcements`): the stream is scrolled only until the last
+    rendered announcement is a cached one (posts are newest first), and older cached posts
+    are carried over unchanged. A class's stream is read to the end, so edits, comments
+    and deletions on old posts show up, once its oldest post's `extra.read_at` is over
+    24h old. Classes with no cached announcements are always read to the end.
+  - Both age-based re-reads are paced by `_due`: besides everything past its limit, each
+    run re-reads the oldest share that the time since the last successful full run
+    (`Source.last_run_at`) is of the limit. At a 2h schedule that's 1/12 of them a run;
+    at a daily one, all of them. Without it they all come due in the same run.
 
 ### Storage and API
 
@@ -301,7 +313,8 @@ API access stays at `/api/docs`.
   announcements. `url` (the deep link back to the source) is the most important field.
 - Anything source-specific goes in `extra`. For Classroom, `extra.submitted_work` is the
   student's own attachments, `extra.links` are links from the description,
-  `extra.list_signature` and `extra.detail_fetched_at` are cache bookkeeping.
+  `extra.list_signature`, `extra.detail_fetched_at` and (announcements) `extra.read_at`
+  are cache bookkeeping.
 - Infinite Campus produces `Grade` records (one per course × term × grading task), each
   with `GradeEntry` assignment scores, plus one course-less `Grade` per overall GPA
   (`gpa` set, id `gpa:<calendarID>:<type>:<termSeq>:<w|uw>`). It produces no `Item`s.
