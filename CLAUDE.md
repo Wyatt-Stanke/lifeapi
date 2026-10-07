@@ -87,7 +87,7 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   Assignments come from `student_assignments/<subject>?status=assigned|upcoming|completed`.
 - **Infinite Campus**: after SSO, calls `/campus/resources/portal/grades` and
   `/grades/detail/<sectionID>` with `page.request`, plus `/campus/api/campus/grading/gpas/my/gpa`
-  for overall GPAs (this district shows only a weighted cumulative GPA, on a 0–100 scale). The session cookie doesn't persist
+  for overall GPAs (this district shows only a weighted cumulative GPA, as a percentage that weighting can push past 100). The session cookie doesn't persist
   across browser launches, so it signs in every run. Grades only, by request.
 - **VHL**: in-page `fetch` of `study_schedule/event_calendar/YYYY-MM` (HTML fragments
   listing the due dates) and `assignments_by_due_date?due_date=` (JSON). Never open
@@ -186,11 +186,17 @@ A temporary, deliberately unstyled explorer: plain semantic HTML, no CSS, no bui
 It's a user-facing wrapper (Today, Upcoming, Missing, Announcements, Courses, Grades,
 Search, Sync status with sync buttons), not an endpoint browser. Raw API access stays at `/api/docs`.
 
-- `serve.py` is stdlib only. It proxies `/api/*` to the API, so the API needs no CORS.
+- `serve.py` is stdlib only. It proxies `/api/*` (GET, POST, DELETE; each method needs its
+  own `do_<METHOD>`, or `BaseHTTPRequestHandler` answers 501) to the API, so the API needs no CORS.
   It sends `X-Forwarded-Prefix: /api`, which the API's `forwarded_prefix` middleware turns
   into the request's `root_path`. That way `/api/docs` loads `/api/openapi.json`, and the
-  spec's `servers` is `/api`, so "Try it out" works. Every other path serves `index.html`. It re-reads `index.html` on each request, so page edits need only a
+  spec's `servers` is `/api`, so "Try it out" works. Paths in `PAGES` serve standalone pages,
+  and every other path serves `index.html`. It re-reads pages on each request, so page edits need only a
   browser refresh. Changes to `serve.py` need a restart.
+- `biggpa.html` (`/biggpa`) is the one styled page: `GET /api/gpa` in large Inter (Google
+  Fonts), black on white, sized to the window by `fit()`, re-fetched every 5 minutes (a failed
+  refresh keeps the last value). It reads the token the explorer
+  saves in `localStorage` (`lifeapi-token`).
 - `index.html` holds all the JS in one inline script. A tiny `h(tag, attrs, ...kids)`
   helper builds the DOM. Views are async functions that return nodes, and the hash router
   calls them as `view(...pathArgs, params)`. Routes are `#/item/<source>/<id>`,

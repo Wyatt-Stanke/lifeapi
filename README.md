@@ -207,9 +207,11 @@ All list endpoints return only items still present at the source, unless you pas
 | `GET /items/{source}/{id}` | One item. |
 | `GET /courses` | Classes per source. |
 | `GET /grades` | Infinite Campus grades. Filters: `source`, `term`. |
+| `GET /gpa` | The cumulative weighted GPA as a bare number, a percentage (e.g. `99.15`). Weighting can lift it above 100. |
 | `GET /sources` | Every source, whether it's enabled, and its last run (`null` if never): when it ran, whether it succeeded, the error, and counts. |
 | `POST /sync` | Queue a sync now. `source` (repeatable) limits it; omit for every enabled source. Returns the request (202, or 200 if a waiting request already covers it). See [Syncing on demand](#syncing-on-demand). |
 | `GET /sync` | Recent sync requests, newest first. `status`: `pending`, `running`, `done` or `failed` (with `error`). |
+| `DELETE /sync` | Clear the sync request list: deletes finished requests and cancels waiting ones. |
 | `GET /sync/{request_id}` | One sync request. |
 | `GET /health` | Liveness check. |
 

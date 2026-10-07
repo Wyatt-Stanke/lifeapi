@@ -155,7 +155,7 @@ class GradeEntry(BaseModel):
                                                 "not just a number).", examples=["95"])
     points_earned: float | None = Field(None, description="Points earned.")
     points_possible: float | None = Field(None, description="Points possible.")
-    percent: float | None = Field(None, description="Score as a percentage, 0–100.")
+    percent: float | None = Field(None, description="Score as a percentage.")
     flags: list[str] = Field(default_factory=list, description="Markers such as `missing`, "
                                                                "`late`, `exempt`, `incomplete`.")
     comments: str | None = Field(None, description="Teacher's comment on this score.")
@@ -177,9 +177,10 @@ class Grade(BaseModel):
     teacher: str | None = Field(None, description="Teacher's display name.")
     letter: str | None = Field(None, description="Letter grade, if posted or computed.",
                                examples=["A-"])
-    percent: float | None = Field(None, description="Grade as a percentage, 0–100.")
+    percent: float | None = Field(None, description="Grade as a percentage.")
     gpa: float | None = Field(None, description="Set only on overall GPA records (no course), on "
-                                                "the school's own scale (may be 0–100).",
+                                                "the school's own scale (here a percentage, which "
+                                                "weighting can lift above 100).",
                               examples=[99.15])
     url: str | None = Field(None, description="Deep link to this grade on the source.")
     categories: list[dict[str, Any]] = Field(

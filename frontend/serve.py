@@ -1,8 +1,8 @@
 """Dev server for the explorer frontend: `python frontend/serve.py [--port 8080] [--api http://127.0.0.1:8000]`.
 
-Proxies /api/* (GET and POST) to the API, so the page can call it same-origin without the
-API needing CORS, and serves index.html for every other path (so `/<source URL>` links reach the page's
-link resolver). Stdlib only.
+Proxies /api/* (GET, POST and DELETE) to the API, so the page can call it same-origin without the
+API needing CORS, serves the standalone pages in PAGES (e.g. /biggpa), and serves index.html for every
+other path (so `/<source URL>` links reach the page's link resolver). Stdlib only.
 """
 
 from __future__ import annotations
@@ -13,23 +13,35 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-INDEX = Path(__file__).resolve().parent / "index.html"
+HERE = Path(__file__).resolve().parent
+INDEX = HERE / "index.html"
+# Standalone pages, outside the explorer's hash router. Re-read per request, like index.html.
+PAGES = {"/biggpa": HERE / "biggpa.html"}
 
 
 def make_handler(api: str) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
+            self._proxy_write("POST")
+
+        def do_DELETE(self) -> None:
+            self._proxy_write("DELETE")
+
+        def _proxy_write(self, method: str) -> None:
             if not self.path.startswith("/api/"):
                 self._send(405, "text/plain", b"Method not allowed")
                 return
             body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-            self._proxy(self.path[len("/api"):], "POST", body)
+            self._proxy(self.path[len("/api"):], method, body)
 
         def do_GET(self) -> None:
             if self.path.startswith("/api/"):
                 target = self.path[len("/api"):]
             elif self.path == "/favicon.ico":
                 self._send(404, "text/plain", b"Not found")
+                return
+            elif page := PAGES.get(self.path.split("?", 1)[0].rstrip("/")):
+                self._send(200, "text/html; charset=utf-8", page.read_bytes())
                 return
             else:
                 # Every other path gets the page, which handles `/<source URL>` links itself
