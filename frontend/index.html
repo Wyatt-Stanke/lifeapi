@@ -383,11 +383,28 @@ async function viewSearch(params) {
   ];
 }
 
+const copyButton = (text, title = "Copy") => h("button", {
+  onclick: async (e) => { await navigator.clipboard.writeText(await text()); e.target.textContent = "Copied"; },
+}, title);
+
+// A failed run's log: its error, the trail of everything it did, and the traceback.
+// Fetched when opened, since it can run to thousands of lines.
+const runLog = (runId) => {
+  const pre = h("pre");
+  const fetchLog = async () => (await api(`/runs/${runId}`)).log;
+  const box = h("details", {
+    ontoggle: () => box.open && !pre.textContent && fetchLog().then((log) => { pre.textContent = log; }, (e) => { pre.textContent = e.message; }),
+  }, h("summary", {}, "log"), h("p", {}, copyButton(fetchLog, "Copy log")), pre);
+  return box;
+};
+
 // `command` is a source's login_command: shown under the error when a sign-in needs a hand.
-const failure = (error, command) => h("span", {}, h("strong", {}, "Failed"), error ? h("details", {}, h("summary", {}, "error"), h("pre", {}, error),
+// `runId` is set when the run kept a log.
+const failure = (error, command, runId) => h("span", {}, h("strong", {}, "Failed"), error ? h("details", {}, h("summary", {}, "error"), h("pre", {}, error),
   command ? [h("p", {}, "The sign-in needs finishing by hand. From your lifeapi checkout, run this, then sign in in the window that opens:"),
     h("pre", {}, h("code", {}, command)),
-    h("button", { onclick: (e) => navigator.clipboard.writeText(command).then(() => { e.target.textContent = "Copied"; }) }, "Copy command")] : null) : null);
+    copyButton(async () => command, "Copy command")] : null) : null,
+  runId != null ? runLog(runId) : null);
 
 // Fills in and re-renders its own box (every 5 s while a sync is queued or running) rather
 // than going through route(), so there's no "Loading…" flash.
@@ -398,6 +415,13 @@ async function viewStatus() {
   async function sync(sources) {
     try { await api("/sync", { source: sources }, { method: "POST" }); }
     catch (e) { alert(`Couldn't request a sync: ${e.message}`); }
+    render();
+  }
+
+  async function clear() {
+    if (!confirm("Clear the sync request list? Queued requests are cancelled; running ones stay.")) return;
+    try { await api("/sync", {}, { method: "DELETE" }); }
+    catch (e) { alert(`Couldn't clear sync requests: ${e.message}`); }
     render();
   }
 
@@ -413,7 +437,7 @@ async function viewStatus() {
         h("tr", {}, ["Source", "Last run", "Result", "Courses", "Items", "Grades", "Last success", ""].map((x) => h("th", {}, x))),
         sources.map((s) => {
           const r = s.last_run;
-          const result = !r ? "never run" : r.ok == null ? (r.finished_at ? "?" : "running…") : r.ok ? "OK" : failure(r.error, s.login_command);
+          const result = !r ? "never run" : r.ok == null ? (r.finished_at ? "?" : "running…") : r.ok ? "OK" : failure(r.error, s.login_command, r.has_log ? r.run_id : null);
           const state = activeFor(s.source);
           return h("tr", {},
             h("td", {}, sourceName(s.source), s.enabled ? null : h("small", {}, " (disabled)")),
@@ -424,6 +448,7 @@ async function viewStatus() {
               : h("button", { onclick: () => sync(s.source) }, "Sync")));
         })),
       h("h2", {}, "Sync requests"),
+      requests.length ? h("p", {}, h("button", { onclick: clear }, "Clear list")) : null,
       requests.length ? h("table", { border: 1, cellpadding: 4 },
         h("tr", {}, ["Requested", "Sources", "Status", "Finished"].map((x) => h("th", {}, x))),
         requests.map((r) => h("tr", {},

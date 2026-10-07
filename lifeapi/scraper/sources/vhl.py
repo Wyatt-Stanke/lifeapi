@@ -79,15 +79,18 @@ class VistaHigherLearning(Source):
         page = await self.new_page()
         app: Page | None = None
         try:
-            app = await launch_app(self.context, page, "Vista Higher Learning")
-            await app.goto(HOME)
-            await app.wait_for_selector('a[href*="m3a.vhlcentral.com/courses/"]', timeout=config.timeout(30_000))
-            sections = await app.evaluate(SECTIONS_JS)
+            with self.step("opening VHL from the Clever dashboard"):
+                app = await launch_app(self.context, page, "Vista Higher Learning")
+            with self.step("listing classes on the VHL home page"):
+                await app.goto(HOME)
+                await app.wait_for_selector('a[href*="m3a.vhlcentral.com/courses/"]', timeout=config.timeout(30_000))
+                sections = await app.evaluate(SECTIONS_JS)
             if not sections:
                 await dump_debug(app, "vhl_no_sections")
             result = ScrapeResult()
             for s in sections:
-                course, items = await self._section(app, s)
+                with self.step(f"reading the VHL class at {s['href']}"):
+                    course, items = await self._section(app, s)
                 result.courses.append(course)
                 result.items += items
             return result

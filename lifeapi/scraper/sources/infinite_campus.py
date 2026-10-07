@@ -40,7 +40,8 @@ class InfiniteCampus(Source):
         self.app_name = u.path.rsplit("/", 1)[-1].removesuffix(".jsp")  # e.g. "jerseycity"
         page = await self.new_page()
         try:
-            await self._login(page)
+            with self.step("signing in to Infinite Campus"):
+                await self._login(page)
             enrollments = await self._get(page, "/campus/resources/portal/grades")
             return await self._parse(page, enrollments)
         finally:
@@ -70,9 +71,10 @@ class InfiniteCampus(Source):
             raise LoginError(f"Infinite Campus login didn't reach the portal (at {page.url})") from e
 
     async def _get(self, page: Page, path: str) -> Any:
-        r = await page.request.get(
-            self.base + path, headers={"Accept": "application/json"}, timeout=config.timeout(30_000)
-        )
+        with self.step(f"fetching {path}"):
+            r = await page.request.get(
+                self.base + path, headers={"Accept": "application/json"}, timeout=config.timeout(30_000)
+            )
         if not r.ok:
             raise RuntimeError(f"GET {path} -> HTTP {r.status}")
         return await r.json()

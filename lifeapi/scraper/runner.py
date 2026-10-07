@@ -17,6 +17,7 @@ from ..models import Item
 from . import sources  # noqa: F401  (registers all sources)
 from .base import REGISTRY, Source
 from .browser import browser_context
+from .trail import Trail
 
 log = logging.getLogger("lifeapi.scraper")
 
@@ -102,19 +103,41 @@ async def run(only: list[str] | None = None, headless: bool | None = None,
     return not errors
 
 
+def describe_error(e: BaseException, last_url: str | None = None) -> str:
+    """What went wrong, for `scrape_runs.error`: the exception, the steps it happened in
+    (`Source.step` notes), what caused it, and the last page a tab was on. Starts with
+    "<ExceptionName>: " (the API looks for "LoginError:")."""
+    lines = [f"{type(e).__name__}: {e}".strip()]
+    lines += [f"  {note}" for note in getattr(e, "__notes__", ())]
+    cause = e.__cause__ or (None if e.__suppress_context__ else e.__context__)
+    seen = {id(e)}
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        lines.append(f"caused by {type(cause).__name__}: {cause}".strip())
+        lines += [f"  {note}" for note in getattr(cause, "__notes__", ())]
+        cause = cause.__cause__ or (None if cause.__suppress_context__ else cause.__context__)
+    if last_url:
+        lines.append(f"last page: {last_url}")
+    return "\n".join(lines)
+
+
 async def _run_one(conn, ctx, cls: type[Source]) -> str | None:
-    """Scrape one source and store the result. Returns the error, or None on success."""
+    """Scrape one source and store the result. Returns the error, or None on success.
+    A failed run also stores its trail (see `trail.py`) for piecing together what happened."""
     log.info("Scraping %s", cls.name)
     run_id = storage.start_run(conn, cls.name)
-    try:
-        source = cls(ctx, previous=_previous_items(conn, cls.name))
-        result = await source.scrape()
-    except Exception as e:
-        log.error("%s failed: %s", cls.name, e)
-        log.debug("%s", traceback.format_exc())
-        error = f"{type(e).__name__}: {e}"
-        storage.finish_run(conn, run_id, None, error=error)
-        return error
+    with Trail(ctx) as trail:
+        try:
+            source = cls(ctx, previous=_previous_items(conn, cls.name))
+            result = await source.scrape()
+        except Exception as e:
+            error = describe_error(e, trail.last_url)
+            tb = traceback.format_exc()
+            run_log = f"{cls.name} run {run_id}\n{error}\n\n--- trail ---\n{trail.text()}\n\n--- traceback ---\n{tb}"
+            log.error("%s failed: %s", cls.name, error)
+            log.debug("%s", tb)
+            storage.finish_run(conn, run_id, None, error=error, log=run_log)
+            return error
     storage.save_result(conn, cls.name, result)
     storage.finish_run(conn, run_id, result)
     log.info("%s: %d courses, %d items, %d grades",

@@ -47,14 +47,31 @@ class RunCounts(BaseModel):
 
 
 class LastRun(BaseModel):
+    run_id: int = Field(description="Id for `GET /runs/{run_id}`.")
     started_at: Timestamp = Field(description="When the run started (UTC).")
     finished_at: Timestamp | None = Field(description="When it finished (UTC); null while running.")
     ok: bool | None = Field(description="True if it succeeded, false if it failed, null while "
                                         "running. A failed run leaves the source's previous "
                                         "data in place.")
     error: str | None = Field(description="Error message from a failed run, as "
-                                          "`ExceptionType: message`.")
+                                          "`ExceptionType: message`, then indented `while …` "
+                                          "lines saying what the scraper was doing, any "
+                                          "`caused by …` lines, and the `last page:` URL.")
     counts: RunCounts
+    has_log: bool = Field(description="Whether the run kept a log (`GET /runs/{run_id}/log`). "
+                                      "Only failed runs do, for each source's last 20 runs.")
+
+
+class Run(LastRun):
+    source: str = Field(description="The source this run scraped.", examples=["google_classroom"])
+
+
+class RunDetail(Run):
+    log: str | None = Field(description="For a failed run: the error, a timestamped trail of "
+                                        "the scraper's log lines and browser activity (tabs, "
+                                        "navigations, XHR responses, HTTP errors, failed "
+                                        "requests; URLs only, with secrets masked), and the "
+                                        "traceback. Null otherwise.")
 
 
 class SourceStatus(BaseModel):
@@ -85,6 +102,10 @@ class SyncRequest(BaseModel):
     finished_at: Timestamp | None = Field(description="When that scrape finished (UTC).")
     error: str | None = Field(description="Why it failed, as `source: error` for each failed "
                                           "source, separated by `; `.")
+
+
+class ClearedSyncRequests(BaseModel):
+    deleted: int = Field(description="How many requests were deleted or cancelled.")
 
 
 class Health(BaseModel):

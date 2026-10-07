@@ -35,10 +35,12 @@ def main() -> None:
             print(f"{name}{'' if cls.enabled else '  (disabled)'}")
         return
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-    )
+    level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+    # lifeapi always logs debug lines, for the trail saved with a failed run (trail.py);
+    # the console shows them only with -v.
+    logging.getLogger().handlers[0].setLevel(level)
+    logging.getLogger("lifeapi").setLevel(logging.DEBUG)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
     ok = asyncio.run(run(only=args.only, headless=False if args.headed else None,
                          requested=args.requested))

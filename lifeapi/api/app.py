@@ -1,6 +1,6 @@
 """HTTP API over the scraped data. Runs independently of the scraper and only reads the
-SQLite database the scraper writes, except for queueing manual sync requests (`/sync`),
-which the scraper picks up.
+SQLite database the scraper writes, except for queueing and clearing manual sync requests
+(`/sync`), which the scraper picks up.
 
 The OpenAPI spec is meant to stand on its own (handed to a person or an agent without the
 code), so keep summaries, descriptions and `schemas.py` in step with behavior."""
@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Response
+from fastapi.responses import PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .. import config, storage
@@ -20,8 +21,8 @@ from ..models import ItemKind
 from ..scraper import sources as _sources  # noqa: F401  (registers all sources)
 from ..scraper.base import REGISTRY
 from .schemas import (
-    DESCRIPTION, DONE_STATUSES, TAGS, Course, Grade, Health, Item, SourceStatus, SyncRequest,
-    errors,
+    DESCRIPTION, DONE_STATUSES, TAGS, ClearedSyncRequests, Course, Grade, Health, Item, Run,
+    RunDetail, SourceStatus, SyncRequest, errors,
 )
 
 app = FastAPI(
@@ -96,7 +97,8 @@ def sources(conn: sqlite3.Connection = Depends(db)) -> list[SourceStatus]:
     last succeeded. Check `last_success_at` to see how fresh a source's data is; a failed run
     keeps the previous data, so a source can be stale even though it returns records.
     `login_command` is set when the last run got stuck on a sign-in challenge that a human
-    has to finish."""
+    has to finish. A failed run with `has_log` has a step-by-step log at
+    `GET /runs/{run_id}/log`."""
     rows = {r["source"]: r for r in conn.execute(
         """SELECT r.* FROM scrape_runs r
            JOIN (SELECT source, MAX(run_id) AS run_id FROM scrape_runs GROUP BY source) last
@@ -112,13 +114,7 @@ def sources(conn: sqlite3.Connection = Depends(db)) -> list[SourceStatus]:
         out.append({
             "source": name,
             "enabled": name in REGISTRY and REGISTRY[name].enabled,
-            "last_run": r and {
-                "started_at": r["started_at"],
-                "finished_at": r["finished_at"],
-                "ok": None if r["ok"] is None else bool(r["ok"]),
-                "error": r["error"],
-                "counts": {"courses": r["courses"], "items": r["items"], "grades": r["grades"]},
-            },
+            "last_run": r and storage.run_to_dict(r),
             "last_success_at": ok["finished_at"] if ok else None,
             "login_command": _login_command(name, r and r["error"]),
         })
@@ -174,6 +170,15 @@ def sync_requests(
     return [storage.sync_request_to_dict(r) for r in rows]
 
 
+@app.delete("/sync", dependencies=[Auth], tags=["status"], operation_id="clearSyncRequests",
+            summary="Clear the sync request list", responses=errors(401))
+def clear_sync_requests() -> ClearedSyncRequests:
+    """Deletes finished requests and cancels waiting ones. Running ones stay, since their run
+    still reports on them."""
+    with storage.connect() as conn:
+        return {"deleted": storage.clear_sync_requests(conn)}
+
+
 @app.get("/sync/{request_id}", dependencies=[Auth], tags=["status"],
          operation_id="getSyncRequest", summary="Get one sync request",
          responses=errors(401, 404))
@@ -186,6 +191,56 @@ def sync_request(
     if not row:
         raise HTTPException(404, "Sync request not found")
     return storage.sync_request_to_dict(row)
+
+
+@app.get("/runs", dependencies=[Auth], tags=["status"], operation_id="listRuns",
+         summary="List recent scrape runs", responses=READ_ERRORS)
+def runs(
+    source: str | None = _source_param(),
+    failed: bool = Query(False, description="Only runs that failed."),
+    limit: int = Query(20, ge=1, le=200, description="How many to return."),
+    conn: sqlite3.Connection = Depends(db),
+) -> list[Run]:
+    """Scrape runs, newest first, without their logs (see `GET /runs/{run_id}`)."""
+    sql, args = "SELECT * FROM scrape_runs WHERE 1=1", []
+    if source:
+        sql += " AND source=?"
+        args.append(source)
+    if failed:
+        sql += " AND ok=0"
+    sql += " ORDER BY run_id DESC LIMIT ?"
+    args.append(limit)
+    return [storage.run_to_dict(r) for r in conn.execute(sql, args)]
+
+
+RUN_ID = Path(description="`run_id` from `GET /runs` or a source's `last_run`.")
+
+
+def _run(conn: sqlite3.Connection, run_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM scrape_runs WHERE run_id=?", (run_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Run not found")
+    return row
+
+
+@app.get("/runs/{run_id}", dependencies=[Auth], tags=["status"], operation_id="getRun",
+         summary="Get one scrape run with its log", responses=errors(401, 404, 503))
+def run(run_id: int = RUN_ID, conn: sqlite3.Connection = Depends(db)) -> RunDetail:
+    """One scrape run, including `log` for a failed run."""
+    return storage.run_to_dict(_run(conn, run_id), with_log=True)
+
+
+@app.get("/runs/{run_id}/log", dependencies=[Auth], tags=["status"], operation_id="getRunLog",
+         summary="Get a failed run's log as text", response_class=PlainTextResponse,
+         responses={200: {"content": {"text/plain": {}}}, **errors(401, 404, 503)})
+def run_log(run_id: int = RUN_ID, conn: sqlite3.Connection = Depends(db)) -> str:
+    """A failed run's log as plain text, ready to paste: the error, the trail of log lines and
+    browser activity leading up to it, and the traceback. 404 if the run kept no log (it
+    succeeded, predates logs, or is older than the last 20 runs of its source)."""
+    log = storage.run_to_dict(_run(conn, run_id), with_log=True)["log"]
+    if log is None:
+        raise HTTPException(404, "No log for this run (only recent failed runs keep one)")
+    return log
 
 
 @app.get("/courses", dependencies=[Auth], tags=["courses"], operation_id="listCourses",

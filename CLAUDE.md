@@ -67,6 +67,15 @@ College Board API responses contain access tokens, so delete scratch captures wh
   against a URL; `browser.wait_gone()` confirms a submitted login step went away.
 - `browser.dump_debug()` writes a screenshot and HTML to `data/debug/`. Sources call it
   before re-raising on unexpected pages.
+- Error context: wrap phases in `with self.step("reading X"):`. An exception escaping it
+  gets a "while reading X" note, which `runner.describe_error` puts in
+  `scrape_runs.error` with any chained cause and the last page URL. Bare Playwright
+  timeouts don't say what they waited for, so wrap waits in steps.
+- Run trail (`trail.py`): each source run records every `lifeapi.*` log line (debug
+  too: `__main__` sets the logger to DEBUG and filters the console instead) plus browser
+  activity (navigations, XHR/fetch responses, HTTP errors, failed requests, console
+  errors). Failed runs store it in `scrape_runs.log` (the last 20 per source), served at
+  `GET /runs/{id}/log`. Only URLs are logged, with credential-like query params masked.
 
 ### Per-source strategy
 
