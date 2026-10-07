@@ -20,6 +20,7 @@ Standard library only, so it runs without the project's virtualenv.
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import shlex
 import shutil
@@ -60,13 +61,49 @@ class Remote:
             self.ssh = ["ssh", "-o", "ControlMaster=auto", "-o", f"ControlPath={self.ctl_dir}/%C",
                         "-o", "ControlPersist=60", host]
 
-    def argv(self, *args: str) -> list[str]:
-        cmd = [*self.docker, *args]
+        self.sudo_password: str | None = None
+
+    def wrap(self, cmd: list[str]) -> list[str]:
         # ssh joins its arguments into one string for the remote shell, so quote them.
         return [*self.ssh, shlex.join(cmd)] if self.host else cmd
 
+    def argv(self, *args: str) -> list[str]:
+        return self.wrap([*self.docker, *args])
+
+    @property
+    def stdin_prefix(self) -> bytes:
+        """What to write to a command's stdin before anything else: the sudo password, which
+        `sudo -S` reads one byte at a time up to the newline, leaving the rest for docker."""
+        return f"{self.sudo_password}\n".encode() if self.sudo_password is not None else b""
+
     def output(self, *args: str) -> str:
-        return subprocess.run(self.argv(*args), check=True, capture_output=True, text=True).stdout
+        return subprocess.run(self.argv(*args), check=True, capture_output=True, text=True,
+                              input=self.stdin_prefix.decode()).stdout
+
+    def use_sudo(self, force: bool) -> None:
+        """Run the engine through sudo if it needs root (the user isn't in the docker group).
+        Over SSH there's no terminal for sudo to prompt on, so a password is asked for here
+        and passed with `sudo -S`."""
+        if not force:
+            probe = subprocess.run(self.argv("ps", "-q"), capture_output=True, text=True)
+            if probe.returncode == 0:
+                return
+            if "permission denied" not in probe.stderr.lower():
+                sys.exit(f"reauth: {shlex.join(probe.args)} failed:\n{probe.stderr.strip()}")
+        # -k ignores cached credentials, so this succeeds only when sudo needs no password for
+        # the engine, and a password line sent later can never leak into docker's stdin.
+        if subprocess.run(self.wrap(["sudo", "-k", "-n", *self.docker, "ps", "-q"]),
+                          capture_output=True).returncode == 0:
+            self.docker = ["sudo", "-n", *self.docker]
+            return
+        where = f" on {self.host}" if self.host else ""
+        self.sudo_password = getpass.getpass(f"reauth: {self.docker[0]} needs sudo{where}. "
+                                             "sudo password: ")
+        self.docker = ["sudo", "-k", "-S", "-p", "", *self.docker]
+        try:
+            self.output("ps", "-q")
+        except subprocess.CalledProcessError as e:
+            sys.exit(f"reauth: sudo {self.docker[-1]} failed:\n{e.stderr.strip()}")
 
     def close(self) -> None:
         if self.host:
@@ -121,6 +158,9 @@ def serve_vnc(remote: Remote, container: str, listener: socket.socket) -> None:
         proc = subprocess.Popen(remote.argv("exec", "-i", container, "python", "-c", PIPE),
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 start_new_session=True)
+        if remote.stdin_prefix:
+            proc.stdin.write(remote.stdin_prefix)
+            proc.stdin.flush()
 
         def run(conn=conn, proc=proc):
             threading.Thread(target=sock_to_pipe, args=(conn, proc.stdin), daemon=True).start()
@@ -147,7 +187,10 @@ def main() -> int:
     target.add_argument("--local", action="store_true", help="the container runs on this machine")
     parser.add_argument("--container", help="scraper container name (default: find it by label)")
     parser.add_argument("--docker", help='container engine command (default: "docker" over SSH; '
-                        'podman or docker with --local). E.g. "sudo docker".')
+                        'podman or docker with --local)')
+    parser.add_argument("--sudo", action="store_true",
+                        help="run the engine with sudo (default: only if it gets permission "
+                        "denied); asks for the sudo password unless sudo needs none")
     parser.add_argument("--only", nargs="+", metavar="SOURCE",
                         help="scrape just these sources (default: every enabled source)")
     parser.add_argument("-v", "--verbose", action="store_true", help="scraper debug logging")
@@ -160,6 +203,9 @@ def main() -> int:
         docker = ["podman" if shutil.which("podman") else "docker"]
     else:
         docker = ["docker"]
+    if docker[0] == "sudo":  # --docker "sudo docker": sudo needs the handling in use_sudo
+        docker = docker[1:]
+        args.sudo = True
     remote = Remote(None if args.local else args.host, docker)
 
     listener = socket.socket()
@@ -168,6 +214,7 @@ def main() -> int:
     port = listener.getsockname()[1]
     session = None
     try:
+        remote.use_sudo(force=args.sudo)
         container = args.container or find_container(remote)
         print(f"reauth: starting a headed scrape in {container}", flush=True)
         # stdin stays open and unused: when this script (or the SSH connection) goes away,
@@ -177,6 +224,8 @@ def main() -> int:
                         LOGIN_SH, *scraper_args),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             start_new_session=True)  # Ctrl-C reaches only us; we stop it via stdin below
+        session.stdin.write(remote.stdin_prefix.decode())
+        session.stdin.flush()
         threading.Thread(target=serve_vnc, args=(remote, container, listener), daemon=True).start()
 
         password = None
