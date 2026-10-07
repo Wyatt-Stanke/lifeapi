@@ -14,6 +14,8 @@ services:
       LIFEAPI_API_TOKEN: ${LIFEAPI_API_TOKEN:?set LIFEAPI_API_TOKEN, the API's bearer token}
       # The server's SSH destination, shown in /sources' login_command (deploy/reauth.py).
       LIFEAPI_REAUTH_TARGET: ${LIFEAPI_REAUTH_TARGET:-}
+      # The default schedule, which /sources reports. Must match the scraper's.
+      LIFEAPI_SCRAPE_INTERVAL: ${LIFEAPI_SCRAPE_INTERVAL:-7200}
     volumes:
       - data:/data
     expose:
@@ -46,8 +48,9 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # Scrapes on start, then every LIFEAPI_SCRAPE_INTERVAL seconds, plus whatever POST /sync
-  # asks for (checked every LIFEAPI_SYNC_POLL seconds). To finish a sign-in
+  # Scrapes each source on its schedule (set through the API; by default every
+  # LIFEAPI_SCRAPE_INTERVAL seconds), checked every minute, plus whatever POST /sync asks
+  # for (checked every LIFEAPI_SYNC_POLL seconds). To finish a sign-in
   # challenge by hand, see "Finishing a sign-in challenge" in the README.
   scraper:
     build: .

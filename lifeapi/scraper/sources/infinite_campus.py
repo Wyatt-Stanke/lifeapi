@@ -4,6 +4,8 @@ After the browser signs in, the portal's own JSON endpoints are called with the 
   /campus/resources/portal/grades                    -> courses x terms x grading tasks
   /campus/resources/portal/grades/detail/<section>   -> categories + assignment scores
   /campus/api/campus/grading/gpas/my/gpa             -> overall GPAs (cumulative, maybe term)
+
+The `gpa` partial fetch calls only the last one.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ def _clean(s: Any) -> str | None:
 @register
 class InfiniteCampus(Source):
     name = "infinite_campus"
+    partials = {"gpa": "Overall GPA only"}
 
     async def scrape(self) -> ScrapeResult:
         u = urlparse(config.INFINITE_CAMPUS_URL)
@@ -49,8 +52,10 @@ class InfiniteCampus(Source):
         try:
             with self.step("signing in to Infinite Campus"):
                 await self._login(page)
-            enrollments = await self._get(page, "/campus/resources/portal/grades")
-            result = await self._parse(page, enrollments)
+            result = ScrapeResult()
+            if self.partial != "gpa":
+                enrollments = await self._get(page, "/campus/resources/portal/grades")
+                result = await self._parse(page, enrollments)
             gpas = await self._get(page, "/campus/api/campus/grading/gpas/my/gpa")
             result.grades += [g for g in map(self._gpa, gpas) if g.gpa is not None]
             return result

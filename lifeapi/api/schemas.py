@@ -48,6 +48,9 @@ class RunCounts(BaseModel):
 
 class LastRun(BaseModel):
     run_id: int = Field(description="Id for `GET /runs/{run_id}`.")
+    partial: str | None = Field(description="The partial fetch this run did (one of the "
+                                            "source's `partials`, e.g. `gpa`), or null for a "
+                                            "full one.")
     started_at: Timestamp = Field(description="When the run started (UTC).")
     finished_at: Timestamp | None = Field(description="When it finished (UTC); null while running.")
     ok: bool | None = Field(description="True if it succeeded, false if it failed, null while "
@@ -74,14 +77,60 @@ class RunDetail(Run):
                                         "traceback. Null otherwise.")
 
 
+class PartialFetch(BaseModel):
+    name: str = Field(description="Name to use as a schedule's `partial`.", examples=["gpa"])
+    description: str = Field(description="What it fetches.", examples=["Overall GPA only"])
+
+
+_INTERVAL = ("Minutes between scheduled fetches, counted from the start of the source's "
+             "previous fetch (scheduled or manual).")
+_PARTIAL = ("A partial fetch (one of the source's `partials`) to run between full fetches, or "
+            "null to fetch everything every time.")
+_FULL_EVERY = ("With `partial`: every this-many-th fetch is a full one and the rest are "
+               "`partial` (4: full, partial, partial, partial, full, …). Null without `partial`.")
+
+
+class ScheduleSettings(BaseModel):
+    """How often to fetch a source, and how much each time."""
+
+    interval_minutes: int = Field(ge=5, description=_INTERVAL + " At least 5.", examples=[30])
+    partial: str | None = Field(None, description=_PARTIAL, examples=["gpa"])
+    full_every: int | None = Field(None, ge=2, description=_FULL_EVERY + " Required with "
+                                                          "`partial`, at least 2.", examples=[4])
+
+
+class Schedule(BaseModel):
+    """When a source is fetched on its own. Set it with `PUT /sources/{source}/schedule`."""
+
+    interval_minutes: int = Field(description=_INTERVAL, examples=[30])
+    partial: str | None = Field(description=_PARTIAL, examples=["gpa"])
+    full_every: int | None = Field(description=_FULL_EVERY, examples=[4])
+    default: bool = Field(description="True when no schedule has been set for this source, so it "
+                                      "follows the server's default: a full fetch every "
+                                      "`interval_minutes`.")
+    next_fetch_at: Timestamp | None = Field(
+        description="When the next scheduled fetch is due (UTC). A time in the past means it's "
+                    "due now: it starts within about a minute, or after the run in progress. Null "
+                    "for a disabled source, which is never fetched on a schedule.")
+    next_fetch_partial: str | None = Field(description="The partial fetch the next scheduled "
+                                                       "fetch will do, or null for a full one.")
+
+
 class SourceStatus(BaseModel):
     source: str = Field(description="Source name, as used in every `source` field and filter.",
                         examples=["google_classroom"])
     enabled: bool = Field(description="Whether scheduled and manual syncs include this source.")
-    last_run: LastRun | None = Field(description="The most recent scrape of this source; null "
-                                                 "if it has never run.")
-    last_success_at: Timestamp | None = Field(description="When the last successful run finished "
-                                                          "(UTC). This is how fresh the data is.")
+    partials: list[PartialFetch] = Field(description="Partial fetches this source can do between "
+                                                     "full ones, for its `schedule`. Most "
+                                                     "sources have none.")
+    schedule: Schedule
+    last_run: LastRun | None = Field(description="The most recent scrape of this source, full or "
+                                                 "partial; null if it has never run.")
+    last_success_at: Timestamp | None = Field(description="When the last successful full run "
+                                                          "finished (UTC). This is how fresh the "
+                                                          "data is. Partial runs refresh only "
+                                                          "their part (see each record's "
+                                                          "`last_seen_at`).")
     login_command: str | None = Field(
         description="Set when the last run got stuck on a sign-in challenge: the command that "
                     "finishes the sign-in by hand (run from a checkout of the repository). "
@@ -121,7 +170,7 @@ def errors(*codes: int) -> dict[int | str, dict]:
     text = {
         401: "Bearer token missing or wrong (only when the server sets `LIFEAPI_API_TOKEN`).",
         404: "No record with that id.",
-        400: "Bad request, e.g. an unknown source name.",
+        400: "Bad request, e.g. an unknown source name or a partial fetch the source lacks.",
         503: "The scraper hasn't created the database yet.",
     }
     return {c: {"model": Error, "description": text[c]} for c in codes}
@@ -133,14 +182,15 @@ TAGS = [
     {"name": "grades", "description": "Course grades with category breakdowns and individual "
                                       "scores, and the overall GPA (Infinite Campus)."},
     {"name": "courses", "description": "Classes the student is enrolled in, per source."},
-    {"name": "status", "description": "Which sources exist, how fresh their data is, and "
-                                      "manual sync requests."},
+    {"name": "status", "description": "Which sources exist, how fresh their data is, how often "
+                                      "they're fetched, and manual sync requests."},
 ]
 
 DESCRIPTION = f"""
 One student's schoolwork, collected from several school platforms into a single read-only
-API. A scraper signs in to each platform on a schedule (every couple of hours) and saves what
-it finds; this API serves the saved copy. It never contacts the platforms itself.
+API. A scraper signs in to each platform on a schedule (every couple of hours unless set
+otherwise) and saves what it finds; this API serves the saved copy. It never contacts the
+platforms itself.
 
 ## Common questions
 
@@ -154,8 +204,9 @@ it finds; this API serves the saved copy. It never contacts the platforms itself
 | Find a specific assignment | `GET /items?q=essay` |
 | Everything for one class | `GET /courses`, then `GET /items?source=…&course_id=…` |
 | What did I get on X? | `GET /items?q=…` (`score`, `points_possible`), or `GET /grades` (`entries`) |
-| How up to date is this? | `GET /sources` (`last_success_at`) |
+| How up to date is this? | `GET /sources` (`last_success_at`, and `schedule.next_fetch_at` for the next refresh) |
 | Refresh now | `POST /sync`, then poll `GET /sync/{{request_id}}` until `done` or `failed` |
+| Refresh a source more or less often | `PUT /sources/{{source}}/schedule` |
 
 ## Sources
 
@@ -198,6 +249,17 @@ When a platform gives only a date, deadlines become 23:59 and post dates 00:00 l
 hidden from every list unless you pass `include_inactive=true`. If a source's scrape fails,
 its previous data stays as it was; check `GET /sources` before trusting stale data.
 
+## Schedules
+
+Each source is fetched every `interval_minutes` (its `schedule` in `GET /sources`). Some
+sources can also do a cheaper **partial fetch** that reads only part of their data (listed in
+the source's `partials`): `infinite_campus` has `gpa`, which reads only the overall GPA. A
+schedule can alternate them: `{{"interval_minutes": 30, "partial": "gpa", "full_every": 4}}`
+reads the GPA every 30 minutes and everything every 4th time (every 2 hours). A partial fetch
+updates only what it reads and marks nothing inactive. `PUT /sources/{{source}}/schedule` sets
+a schedule and `DELETE` on the same path restores the default. Manual syncs (`POST /sync`)
+are always full and count as a fetch: the next scheduled one is `interval_minutes` after them.
+
 ## Authentication
 
 If the server sets `LIFEAPI_API_TOKEN`, every endpoint except `/health` and `/gpa` requires
@@ -205,7 +267,7 @@ If the server sets `LIFEAPI_API_TOKEN`, every endpoint except `/health` and `/gp
 
 ## Errors
 
-Errors are JSON `{{"detail": "…"}}`: 401 bad or missing token, 404 unknown id, 400 unknown
-source in a sync request, 422 invalid parameter (`detail` is then a list of problems), 503
-no data yet.
+Errors are JSON `{{"detail": "…"}}`: 401 bad or missing token, 404 unknown id or source, 400
+unknown source in a sync request or a schedule that doesn't fit its source, 422 invalid
+parameter or body (`detail` is then a list of problems), 503 no data yet.
 """

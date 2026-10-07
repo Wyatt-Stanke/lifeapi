@@ -34,6 +34,11 @@ def timeout(ms: int) -> int:
     """A wait deadline in ms, scaled by LIFEAPI_TIMEOUT_SCALE."""
     return int(ms * TIMEOUT_SCALE)
 
+# How often a source is fetched (in full) when no schedule has been set for it through the
+# API (`PUT /sources/{source}/schedule`). The variable is in seconds. The scraper's `--due`
+# runs follow it, and the API reports it, so both need the same value.
+SCRAPE_INTERVAL_MINUTES = max(1, round(int(os.getenv("LIFEAPI_SCRAPE_INTERVAL", "7200")) / 60))
+
 # Optional bearer token for the API. If unset, the API is open (bind it to localhost).
 API_TOKEN = os.getenv("LIFEAPI_API_TOKEN") or None
 

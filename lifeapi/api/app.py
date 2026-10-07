@@ -1,6 +1,7 @@
 """HTTP API over the scraped data. Runs independently of the scraper and only reads the
 SQLite database the scraper writes, except for queueing and clearing manual sync requests
-(`/sync`), which the scraper picks up.
+(`/sync`) and setting fetch schedules (`/sources/{source}/schedule`), which the scraper
+picks up.
 
 The OpenAPI spec is meant to stand on its own (handed to a person or an agent without the
 code), so keep summaries, descriptions and `schemas.py` in step with behavior."""
@@ -19,10 +20,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from .. import config, storage
 from ..models import GPA_PLACES, ItemKind
 from ..scraper import sources as _sources  # noqa: F401  (registers all sources)
-from ..scraper.base import REGISTRY
+from ..scraper.base import REGISTRY, Source
 from .schemas import (
     DESCRIPTION, DONE_STATUSES, TAGS, ClearedSyncRequests, Course, Error, Grade, Health, Item,
-    Run, RunDetail, SourceStatus, SyncRequest, errors,
+    Run, RunDetail, Schedule, ScheduleSettings, SourceStatus, SyncRequest, errors,
 )
 
 app = FastAPI(
@@ -55,9 +56,18 @@ def require_token(creds: HTTPAuthorizationCredentials | None = Depends(_bearer))
         raise HTTPException(401, "Missing or invalid bearer token")
 
 
+_schema_ready = False
+
+
 def db() -> Iterator[sqlite3.Connection]:
+    global _schema_ready
     if not config.DB_PATH.exists():
         raise HTTPException(503, "No data yet; run the scraper first")
+    if not _schema_ready:
+        # Adds tables and columns newer than the scraper that last opened the database, so
+        # reads work right after an upgrade, before the scraper has run.
+        storage.init_db()
+        _schema_ready = True
     with storage.connect(readonly=True) as conn:
         yield conn
 
@@ -101,14 +111,25 @@ def health() -> Health:
     return {"status": "ok"}
 
 
+def _schedule(conn: sqlite3.Connection, name: str) -> dict[str, Any]:
+    """`name`'s effective schedule and its next fetch (see `Schedule`)."""
+    cls = REGISTRY.get(name)
+    schedule = storage.get_schedule(conn, name, cls.partials if cls else ())
+    at, partial = storage.next_fetch(conn, name, schedule)
+    if not (cls and cls.enabled):
+        return {**schedule, "next_fetch_at": None, "next_fetch_partial": None}
+    return {**schedule, "next_fetch_at": _iso(at) if at else storage.now_iso(),
+            "next_fetch_partial": partial}
+
+
 @app.get("/sources", dependencies=[Auth], tags=["status"], operation_id="listSources",
-         summary="List sources and their last scrape", responses=READ_ERRORS)
+         summary="List sources, their schedules and last scrape", responses=READ_ERRORS)
 def sources(conn: sqlite3.Connection = Depends(db)) -> list[SourceStatus]:
-    """Every source with its most recent scrape run (null if it has never run) and when it
-    last succeeded. Check `last_success_at` to see how fresh a source's data is; a failed run
-    keeps the previous data, so a source can be stale even though it returns records.
-    `login_command` is set when the last run got stuck on a sign-in challenge that a human
-    has to finish. A failed run with `has_log` has a step-by-step log at
+    """Every source with its fetch schedule, its most recent scrape run (null if it has never
+    run) and when it last succeeded. Check `last_success_at` to see how fresh a source's data
+    is; a failed run keeps the previous data, so a source can be stale even though it returns
+    records. `login_command` is set when the last run got stuck on a sign-in challenge that a
+    human has to finish. A failed run with `has_log` has a step-by-step log at
     `GET /runs/{run_id}/log`."""
     rows = {r["source"]: r for r in conn.execute(
         """SELECT r.* FROM scrape_runs r
@@ -119,17 +140,67 @@ def sources(conn: sqlite3.Connection = Depends(db)) -> list[SourceStatus]:
     for name in sorted(REGISTRY.keys() | rows.keys()):
         r = rows.get(name)
         ok = conn.execute(
-            "SELECT finished_at FROM scrape_runs WHERE source=? AND ok=1 ORDER BY run_id DESC LIMIT 1",
+            "SELECT finished_at FROM scrape_runs WHERE source=? AND ok=1 AND partial IS NULL "
+            "ORDER BY run_id DESC LIMIT 1",
             (name,),
         ).fetchone()
+        partials = REGISTRY[name].partials if name in REGISTRY else {}
         out.append({
             "source": name,
             "enabled": name in REGISTRY and REGISTRY[name].enabled,
+            "partials": [{"name": k, "description": v} for k, v in partials.items()],
+            "schedule": _schedule(conn, name),
             "last_run": r and storage.run_to_dict(r),
             "last_success_at": ok["finished_at"] if ok else None,
             "login_command": _login_command(name, r and r["error"]),
         })
     return out
+
+
+# The schedule endpoints write, so like /sync they open their own read-write connection.
+
+SOURCE_PATH = Path(description=f"Source name: {SOURCE_NAMES}.", examples=["infinite_campus"])
+SCHEDULE_ERRORS = {404: {"model": Error, "description": "No source with that name."}}
+
+
+def _source(name: str) -> type[Source]:
+    if name not in REGISTRY:
+        raise HTTPException(404, f"Unknown source {name!r}. Available: {', '.join(sorted(REGISTRY))}")
+    return REGISTRY[name]
+
+
+@app.put("/sources/{source}/schedule", dependencies=[Auth], tags=["status"],
+         operation_id="setSchedule", summary="Set how often a source is fetched",
+         responses={**errors(400, 401), **SCHEDULE_ERRORS})
+def set_schedule(settings: ScheduleSettings, source: str = SOURCE_PATH) -> Schedule:
+    """Fetch `source` every `interval_minutes`. With `partial` and `full_every`, every
+    `full_every`th fetch is full and the others do only that partial fetch (one of the
+    source's `partials` in `GET /sources`). For example, `{"interval_minutes": 30, "partial":
+    "gpa", "full_every": 4}` on `infinite_campus` reads the GPA every 30 minutes and every
+    grade every 2 hours. The interval counts from the start of the last fetch, so a shorter
+    one can make the source due at once. Returns the new schedule."""
+    cls = _source(source)
+    if settings.partial is not None and settings.partial not in cls.partials:
+        raise HTTPException(400, f"{source} has no partial fetch {settings.partial!r}. Available: "
+                                 f"{', '.join(cls.partials) or 'none'}")
+    if (settings.partial is None) != (settings.full_every is None):
+        raise HTTPException(400, "Set `partial` and `full_every` together, or neither")
+    with storage.connect() as conn:
+        storage.set_schedule(conn, source, settings.interval_minutes, settings.partial,
+                             settings.full_every)
+        return _schedule(conn, source)
+
+
+@app.delete("/sources/{source}/schedule", dependencies=[Auth], tags=["status"],
+            operation_id="resetSchedule", summary="Restore a source's default schedule",
+            responses={**errors(401), **SCHEDULE_ERRORS})
+def reset_schedule(source: str = SOURCE_PATH) -> Schedule:
+    """Go back to the server's default: a full fetch every couple of hours (see the returned
+    `interval_minutes`). Returns the default schedule."""
+    _source(source)
+    with storage.connect() as conn:
+        storage.reset_schedule(conn, source)
+        return _schedule(conn, source)
 
 
 # The sync endpoints write, so they open their own read-write connection (which also
@@ -154,8 +225,8 @@ def request_sync(
     (everything), so poll `GET /sync/{request_id}` every 15–30 seconds until `status` is `done`
     or `failed`, then re-read the data. If a waiting request already covers these sources, that
     one is returned (200) instead of queueing another (202). Only call this when the user wants
-    fresher data than `GET /sources` shows; the data refreshes on its own every couple of
-    hours."""
+    fresher data than `GET /sources` shows; the data refreshes on its own, on each source's
+    `schedule`. A sync is always a full fetch, and the next scheduled fetch counts from it."""
     if source and (unknown := set(source) - REGISTRY.keys()):
         raise HTTPException(400, f"Unknown source(s): {', '.join(sorted(unknown))}. "
                                  f"Available: {', '.join(sorted(REGISTRY))}")

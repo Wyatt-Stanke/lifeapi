@@ -1,8 +1,10 @@
 """Runs every enabled source once, storing results. Each source is isolated: one failing
 (bad selector, login challenge) doesn't stop the others, and its old data is kept.
 
-A run also settles the manual sync requests (`POST /sync`) it covers. `requested=True`
-runs exactly the sources that are waiting in requests, and nothing if none are."""
+A run also settles the manual sync requests (`POST /sync`) whose sources it fetches in full.
+`requested=True` runs exactly the sources that are waiting in requests, and nothing if none
+are. `due=True` runs the sources their schedules (`PUT /sources/{source}/schedule`) say are
+due, each in full or as the scheduled partial fetch, and nothing if none are."""
 
 from __future__ import annotations
 
@@ -10,6 +12,7 @@ import fcntl
 import logging
 import traceback
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Iterator
 
 from .. import config, storage
@@ -45,14 +48,31 @@ def _expand(sources: list[str] | None) -> set[str]:
     return set(sources) if sources is not None else {n for n, c in REGISTRY.items() if c.enabled}
 
 
+def _due(conn) -> dict[str, str | None]:
+    """Enabled sources their schedules say are due now, each with the partial fetch to run
+    (None: a full one)."""
+    now = datetime.now(timezone.utc)
+    plan = {}
+    for name, cls in REGISTRY.items():
+        if cls.enabled:
+            at, partial = storage.next_fetch(conn, name, storage.get_schedule(conn, name, cls.partials))
+            if at is None or at <= now:
+                plan[name] = partial
+    return plan
+
+
 async def run(only: list[str] | None = None, headless: bool | None = None,
-              requested: bool = False) -> bool:
-    """Scrape the selected sources. Returns True if all of them succeeded."""
+              requested: bool = False, due: bool = False, partial: str | None = None) -> bool:
+    """Scrape the selected sources, in full or (`partial`, or as scheduled with `due`) as a
+    partial fetch. Returns True if all of them succeeded."""
     if only:
         unknown = set(only) - REGISTRY.keys()
         if unknown:
             raise SystemExit(f"Unknown source(s): {', '.join(sorted(unknown))}. "
                              f"Available: {', '.join(sorted(REGISTRY))}")
+    if partial:
+        if lacking := sorted(n for n in only or _expand(None) if partial not in REGISTRY[n].partials):
+            raise SystemExit(f"No partial fetch {partial!r} in {', '.join(lacking)} (see --list)")
 
     with _run_lock(), storage.connect() as conn:
         storage.abandon_sync_requests(conn)
@@ -66,31 +86,38 @@ async def run(only: list[str] | None = None, headless: bool | None = None,
                 storage.finish_sync_request(conn, i, f"Unknown source(s): {', '.join(sorted(unknown))}")
                 del pending[i]
 
+        # Source name -> the partial fetch to run, None for a full one.
+        plan: dict[str, str | None]
         if requested:
-            names = set().union(*pending.values())
-            if only:
-                names &= set(only)
-            if not names:
-                log.info("No sync requests waiting")
-                if pending:  # all for sources outside --only
-                    config.SYNC_TRIGGER.touch()
-                return True
+            plan = dict.fromkeys(set().union(*pending.values()))
+        elif due:
+            plan = _due(conn)
         else:
-            names = set(only) if only else _expand(None)
-        selected = [cls for n, cls in REGISTRY.items() if n in names]
+            plan = dict.fromkeys(set(only) if only else _expand(None), partial)
+        if only:
+            plan = {n: p for n, p in plan.items() if n in only}
+        selected = [(cls, plan[n]) for n, cls in REGISTRY.items() if n in plan]
 
-        claimed = {i: wanted for i, wanted in pending.items() if wanted <= names}
-        storage.start_sync_requests(conn, list(claimed))
+        # A request is settled by a run that fetches all of its sources in full.
+        full = {n for n, p in plan.items() if p is None}
+        claimed = {i: wanted for i, wanted in pending.items() if wanted <= full}
         if len(claimed) < len(pending):
             config.SYNC_TRIGGER.touch()  # the rest wait for another run
+        if not selected:
+            if requested:
+                log.info("No sync requests waiting")
+            else:
+                log.debug("No sources due")  # debug: --due runs every minute
+            return True
+        storage.start_sync_requests(conn, list(claimed))
         if claimed:
             log.info("Covering sync request(s) %s", ", ".join(map(str, claimed)))
 
         errors: dict[str, str] = {}
         try:
             async with browser_context(headless=headless) as ctx:
-                for cls in selected:
-                    if error := await _run_one(conn, ctx, cls):
+                for cls, part in selected:
+                    if error := await _run_one(conn, ctx, cls, part):
                         errors[cls.name] = error
         except Exception as e:
             for i in claimed:
@@ -121,14 +148,15 @@ def describe_error(e: BaseException, last_url: str | None = None) -> str:
     return "\n".join(lines)
 
 
-async def _run_one(conn, ctx, cls: type[Source]) -> str | None:
-    """Scrape one source and store the result. Returns the error, or None on success.
-    A failed run also stores its trail (see `trail.py`) for piecing together what happened."""
-    log.info("Scraping %s", cls.name)
-    run_id = storage.start_run(conn, cls.name)
+async def _run_one(conn, ctx, cls: type[Source], partial: str | None = None) -> str | None:
+    """Scrape one source (`partial`: just that partial fetch) and store the result. Returns
+    the error, or None on success. A failed run also stores its trail (see `trail.py`) for
+    piecing together what happened."""
+    log.info("Scraping %s%s", cls.name, f" (partial: {partial})" if partial else "")
+    run_id = storage.start_run(conn, cls.name, partial)
     with Trail(ctx) as trail:
         try:
-            source = cls(ctx, previous=_previous_items(conn, cls.name))
+            source = cls(ctx, previous=_previous_items(conn, cls.name), partial=partial)
             result = await source.scrape()
         except Exception as e:
             error = describe_error(e, trail.last_url)
@@ -138,7 +166,7 @@ async def _run_one(conn, ctx, cls: type[Source]) -> str | None:
             log.debug("%s", tb)
             storage.finish_run(conn, run_id, None, error=error, log=run_log)
             return error
-    storage.save_result(conn, cls.name, result)
+    storage.save_result(conn, cls.name, result, partial=partial is not None)
     storage.finish_run(conn, run_id, result)
     log.info("%s: %d courses, %d items, %d grades",
              cls.name, len(result.courses), len(result.items), len(result.grades))
