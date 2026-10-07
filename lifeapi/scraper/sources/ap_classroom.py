@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Any
 
 from patchright.async_api import Page, Response
+from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from ... import config
 from ...models import Course, Item, ItemKind, ScrapeResult
@@ -52,13 +53,15 @@ class APClassroom(Source):
     async def scrape(self) -> ScrapeResult:
         page = await self.new_page()
         try:
-            me = await self._login_and_get_me(page)
+            with self.step("signing in and loading the AP Classroom profile"):
+                me = await self._login_and_get_me(page)
             result = ScrapeResult()
             sections = {str(s["masterSubjectId"]): s for s in me.get("sections") or []}
             for subj in me.get("studentSubjects") or []:
                 course = self._course(subj, sections.get(str(subj["id"])))
                 result.courses.append(course)
-                result.items += await self._assignments(page, course)
+                with self.step(f"reading assignments for {course.name}"):
+                    result.items += await self._assignments(page, course)
             return result
         finally:
             await page.close()
@@ -116,16 +119,35 @@ class APClassroom(Source):
     async def _assignments(self, page: Page, course: Course) -> list[Item]:
         items: dict[str, Item] = {}
         for status in STATUSES:
+            # Every assignments-API response, so a timeout can say what came back instead.
+            seen: list[str] = []
+
+            def note(r: Response) -> None:
+                if "/student_assignments/" in r.url:
+                    seen.append(f"HTTP {r.status} {r.url.split('/student_assignments/', 1)[1]}")
+
+            timeout = config.timeout(30_000)
+            page.on("response", note)
             try:
                 async with page.expect_response(
                     lambda r: "/student_assignments/" in r.url and f"status={status}" in r.url,
-                    timeout=config.timeout(30_000),
+                    timeout=timeout,
                 ) as resp:
                     await page.goto(f"{BASE}/{course.id}/assignments?status={status}")
                 data = await (await resp.value).json()
+            except PlaywrightTimeoutError as e:
+                await dump_debug(page, f"ap_classroom_{course.id}_{status}")
+                raise TimeoutError(
+                    f"AP Classroom never fetched the {status!r} assignments for {course.name} "
+                    f"(subject {course.id}) within {timeout // 1000}s. The page ended at {page.url}. "
+                    + (f"Assignment responses it did get: {'; '.join(seen)}" if seen
+                       else "It made no student_assignments requests at all (signed out, or the page didn't finish loading?)")
+                ) from e
             except Exception:
                 await dump_debug(page, f"ap_classroom_{course.id}_{status}")
                 raise
+            finally:
+                page.remove_listener("response", note)
             for a in data.get("assignments") or []:
                 item = self._item(course, a)
                 items.setdefault(item.id, item)

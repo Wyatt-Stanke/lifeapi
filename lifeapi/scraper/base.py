@@ -12,7 +12,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Awaitable, Callable, ClassVar, Iterable, TypeVar
+from contextlib import contextmanager
+from typing import Awaitable, Callable, ClassVar, Iterable, Iterator, TypeVar
 
 from patchright.async_api import BrowserContext, Page
 
@@ -46,6 +47,18 @@ class Source(ABC):
     @abstractmethod
     async def scrape(self) -> ScrapeResult:
         """Log in if needed and return everything this source currently shows."""
+
+    @contextmanager
+    def step(self, what: str) -> Iterator[None]:
+        """Mark a phase of the scrape, e.g. `with self.step(f"reading {course.name}"):`.
+        An exception escaping it gets a "while <what>" note, so a bare Playwright timeout
+        says what it was in the middle of. Steps nest; the innermost note comes first."""
+        self.log.debug("Step: %s", what)
+        try:
+            yield
+        except Exception as e:
+            e.add_note(f"while {what}")
+            raise
 
     async def new_page(self) -> Page:
         return await self.context.new_page()

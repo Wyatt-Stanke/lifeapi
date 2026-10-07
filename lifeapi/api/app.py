@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi.responses import PlainTextResponse
 
 from .. import config, storage
 from ..models import ItemKind
@@ -65,7 +66,7 @@ def sources(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
     """Every registered source with its most recent scrape run (null if it has never run)
     and its last successful one. `login_command` is set when the last run got stuck on a
     sign-in challenge: run it from a checkout of this repository to finish the sign-in by
-    hand over VNC."""
+    hand over VNC. A failed run has `has_log`: its trail is at `/runs/{run_id}/log`."""
     rows = {r["source"]: r for r in conn.execute(
         """SELECT r.* FROM scrape_runs r
            JOIN (SELECT source, MAX(run_id) AS run_id FROM scrape_runs GROUP BY source) last
@@ -81,13 +82,7 @@ def sources(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
         out.append({
             "source": name,
             "enabled": name in REGISTRY and REGISTRY[name].enabled,
-            "last_run": r and {
-                "started_at": r["started_at"],
-                "finished_at": r["finished_at"],
-                "ok": None if r["ok"] is None else bool(r["ok"]),
-                "error": r["error"],
-                "counts": {"courses": r["courses"], "items": r["items"], "grades": r["grades"]},
-            },
+            "last_run": r and storage.run_to_dict(r),
             "last_success_at": ok["finished_at"] if ok else None,
             "login_command": _login_command(name, r and r["error"]),
         })
@@ -127,6 +122,14 @@ def sync_requests(limit: int = Query(20, ge=1, le=200)) -> list[dict[str, Any]]:
     return [storage.sync_request_to_dict(r) for r in rows]
 
 
+@app.delete("/sync", dependencies=[Auth])
+def clear_sync_requests() -> dict[str, int]:
+    """Clear the sync request list: deletes finished requests and cancels waiting ones.
+    Running ones stay, since their run still reports on them."""
+    with storage.connect() as conn:
+        return {"deleted": storage.clear_sync_requests(conn)}
+
+
 @app.get("/sync/{request_id}", dependencies=[Auth])
 def sync_request(request_id: int) -> dict[str, Any]:
     with storage.connect() as conn:
@@ -134,6 +137,49 @@ def sync_request(request_id: int) -> dict[str, Any]:
     if not row:
         raise HTTPException(404, "Sync request not found")
     return storage.sync_request_to_dict(row)
+
+
+@app.get("/runs", dependencies=[Auth])
+def runs(
+    source: str | None = None,
+    failed: bool = False,
+    limit: int = Query(20, ge=1, le=200),
+    conn: sqlite3.Connection = Depends(db),
+) -> list[dict[str, Any]]:
+    """Recent scrape runs, newest first, without their logs."""
+    sql, args = "SELECT * FROM scrape_runs WHERE 1=1", []
+    if source:
+        sql += " AND source=?"
+        args.append(source)
+    if failed:
+        sql += " AND ok=0"
+    sql += " ORDER BY run_id DESC LIMIT ?"
+    args.append(limit)
+    return [storage.run_to_dict(r) for r in conn.execute(sql, args)]
+
+
+def _run(conn: sqlite3.Connection, run_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM scrape_runs WHERE run_id=?", (run_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Run not found")
+    return row
+
+
+@app.get("/runs/{run_id}", dependencies=[Auth])
+def run(run_id: int, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+    """One scrape run. A failed run's `log` is its error, the trail of log lines and
+    browser activity leading up to it, and the traceback (null for older runs and runs
+    that succeeded)."""
+    return storage.run_to_dict(_run(conn, run_id), with_log=True)
+
+
+@app.get("/runs/{run_id}/log", dependencies=[Auth], response_class=PlainTextResponse)
+def run_log(run_id: int, conn: sqlite3.Connection = Depends(db)) -> str:
+    """A failed run's log as plain text, ready to paste."""
+    log = storage.run_to_dict(_run(conn, run_id), with_log=True)["log"]
+    if log is None:
+        raise HTTPException(404, "No log for this run (only failed runs keep one)")
+    return log
 
 
 @app.get("/courses", dependencies=[Auth])

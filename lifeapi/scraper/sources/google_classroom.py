@@ -103,12 +103,15 @@ class GoogleClassroom(Source):
     async def scrape(self) -> ScrapeResult:
         page = await self.new_page()
         try:
-            courses = await self._courses(page)
+            with self.step("listing enrolled classes"):
+                courses = await self._courses(page)
             result = ScrapeResult(courses=courses)
             for course in courses:
                 try:
-                    result.items += await self._classwork(page, course)
-                    result.items += await self._announcements(page, course)
+                    with self.step(f"reading classwork for {course.name}"):
+                        result.items += await self._classwork(page, course)
+                    with self.step(f"reading announcements for {course.name}"):
+                        result.items += await self._announcements(page, course)
                 except Exception:
                     await dump_debug(page, f"google_classroom_{course.id}")
                     raise
@@ -123,13 +126,15 @@ class GoogleClassroom(Source):
         if on_google_login(page):
             await google_login(page)
             await page.goto(url)
-        await page.wait_for_selector(ready, timeout=config.timeout(30_000))
+        with self.step(f"waiting for {ready!r} to appear at {page.url}"):
+            await page.wait_for_selector(ready, timeout=config.timeout(30_000))
 
     async def _list_state(self, page: Page, rows: str, empty: str) -> str:
         """Wait for a classwork list or stream to render: "rows" or "empty"."""
-        state = await page.wait_for_function(
-            LIST_READY_JS, arg=[rows, empty, config.timeout(300)], timeout=config.timeout(30_000)
-        )
+        with self.step(f"waiting for the list ({rows!r}) or its empty message to render at {page.url}"):
+            state = await page.wait_for_function(
+                LIST_READY_JS, arg=[rows, empty, config.timeout(300)], timeout=config.timeout(30_000)
+            )
         return await state.json_value()
 
     # -- courses ----------------------------------------------------------------------
@@ -166,12 +171,13 @@ class GoogleClassroom(Source):
             if not await more.count():
                 break
             n = await page.locator(rows_sel).count()
-            await more.first.click()
-            await page.wait_for_function(
-                "([sel, n]) => document.querySelectorAll(sel).length > n",
-                arg=[rows_sel, n],
-                timeout=config.timeout(15_000),
-            )
+            with self.step(f'clicking "View more" and waiting for more than {n} rows'):
+                await more.first.click()
+                await page.wait_for_function(
+                    "([sel, n]) => document.querySelectorAll(sel).length > n",
+                    arg=[rows_sel, n],
+                    timeout=config.timeout(15_000),
+                )
         await self._list_state(page, rows_sel, EMPTY_CLASSWORK)  # let expanded rows settle
         rows = await page.evaluate(js.CLASSWORK_JS)
 
@@ -311,9 +317,10 @@ class GoogleClassroom(Source):
             n = await page.locator("[data-stream-item-id]").count()
             await page.evaluate("() => { delete window.__lifeapiQuiet; }")
             await page.mouse.wheel(0, 30_000)
-            more = await page.wait_for_function(
-                MORE_POSTS_JS, arg=[n, config.timeout(1_000)], timeout=config.timeout(30_000)
-            )
+            with self.step(f"scrolling the stream for posts older than the first {n}"):
+                more = await page.wait_for_function(
+                    MORE_POSTS_JS, arg=[n, config.timeout(1_000)], timeout=config.timeout(30_000)
+                )
             state = await more.json_value()
             self.log.debug("%s: stream scroll from %d posts: %s", course.name, n, state)
             quiet = quiet + 1 if state == "end" else 0

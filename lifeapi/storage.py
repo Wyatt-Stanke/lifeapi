@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
     error TEXT,
     courses INTEGER,
     items INTEGER,
-    grades INTEGER
+    grades INTEGER,
+    log TEXT  -- a failed run's trail of log lines and browser activity (scraper/trail.py)
 );
 -- Manual sync requests from the API. `sources` is a JSON list, or NULL for every enabled
 -- source. The scraper sets started_at when a run picks one up, then finished_at and ok.
@@ -110,12 +111,23 @@ def connect(path: Path | None = None, readonly: bool = False) -> Iterator[sqlite
         conn = sqlite3.connect(path)
         conn.execute("PRAGMA journal_mode=WAL")  # lets the API read while the scraper writes
         conn.executescript(SCHEMA)
+        _migrate(conn)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Columns added after a table was first created."""
+    if "log" not in {r[1] for r in conn.execute("PRAGMA table_info(scrape_runs)")}:
+        conn.execute("ALTER TABLE scrape_runs ADD COLUMN log TEXT")
+
+
+# Failed runs keep their trail (`log`) for this many of each source's latest runs.
+KEEP_RUN_LOGS = 20
 
 
 def init_db(path: Path | None = None) -> None:
@@ -136,9 +148,10 @@ def finish_run(
     run_id: int,
     result: ScrapeResult | None,
     error: str | None = None,
+    log: str | None = None,
 ) -> None:
     conn.execute(
-        "UPDATE scrape_runs SET finished_at=?, ok=?, error=?, courses=?, items=?, grades=? "
+        "UPDATE scrape_runs SET finished_at=?, ok=?, error=?, courses=?, items=?, grades=?, log=? "
         "WHERE run_id=?",
         (
             now_iso(),
@@ -147,8 +160,15 @@ def finish_run(
             len(result.courses) if result else None,
             len(result.items) if result else None,
             len(result.grades) if result else None,
+            log,
             run_id,
         ),
+    )
+    conn.execute(
+        """UPDATE scrape_runs SET log=NULL WHERE log IS NOT NULL AND source=?1 AND run_id NOT IN
+             (SELECT run_id FROM scrape_runs WHERE source=?1 ORDER BY run_id DESC LIMIT ?2)""",
+        (conn.execute("SELECT source FROM scrape_runs WHERE run_id=?", (run_id,)).fetchone()[0],
+         KEEP_RUN_LOGS),
     )
     conn.commit()
 
@@ -248,6 +268,33 @@ def abandon_sync_requests(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def clear_sync_requests(conn: sqlite3.Connection) -> int:
+    """Delete every sync request except running ones (a run still reports on those).
+    Pending ones are cancelled. Returns how many were deleted."""
+    n = conn.execute(
+        "DELETE FROM sync_requests WHERE started_at IS NULL OR finished_at IS NOT NULL"
+    ).rowcount
+    conn.commit()
+    return n
+
+
+def run_to_dict(row: sqlite3.Row, with_log: bool = False) -> dict[str, Any]:
+    log = row["log"] if "log" in row.keys() else None  # older databases lack the column
+    out = {
+        "run_id": row["run_id"],
+        "source": row["source"],
+        "started_at": row["started_at"],
+        "finished_at": row["finished_at"],
+        "ok": None if row["ok"] is None else bool(row["ok"]),
+        "error": row["error"],
+        "counts": {"courses": row["courses"], "items": row["items"], "grades": row["grades"]},
+        "has_log": log is not None,
+    }
+    if with_log:
+        out["log"] = log
+    return out
+
+
 def sync_request_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     if row["finished_at"]:
         status = "done" if row["ok"] else "failed"
@@ -276,5 +323,5 @@ __all__ = [
     "Course", "Grade", "Item", "ScrapeResult", "connect", "init_db", "start_run",
     "finish_run", "save_result", "row_to_dict", "now_iso", "request_sync",
     "pending_sync_requests", "start_sync_requests", "finish_sync_request",
-    "abandon_sync_requests", "sync_request_to_dict",
+    "abandon_sync_requests", "sync_request_to_dict", "clear_sync_requests", "run_to_dict",
 ]
