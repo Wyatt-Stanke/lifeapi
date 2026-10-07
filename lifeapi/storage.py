@@ -1,7 +1,8 @@
-"""SQLite storage. The scraper writes; the API only reads.
+"""SQLite storage. The scraper writes; the API only reads, apart from sync requests and
+fetch schedules.
 
 Each record is stored as its full JSON document plus a few indexed columns used for
-filtering. When a source finishes a successful scrape, anything from that source that
+filtering. When a source finishes a successful full scrape, anything from that source that
 wasn't seen in the run is marked inactive (it was deleted/hidden upstream) rather than
 dropped, so history is kept.
 """
@@ -11,9 +12,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Collection, Iterator
 
 from . import config
 from .models import Course, Grade, Item, ScrapeResult
@@ -68,7 +69,8 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
     courses INTEGER,
     items INTEGER,
     grades INTEGER,
-    log TEXT  -- a failed run's trail of log lines and browser activity (scraper/trail.py)
+    log TEXT,  -- a failed run's trail of log lines and browser activity (scraper/trail.py)
+    partial TEXT  -- the partial fetch this run did (`Source.partials`); NULL for a full one
 );
 -- Manual sync requests from the API. `sources` is a JSON list, or NULL for every enabled
 -- source. The scraper sets started_at when a run picks one up, then finished_at and ok.
@@ -80,6 +82,16 @@ CREATE TABLE IF NOT EXISTS sync_requests (
     finished_at TEXT,
     ok INTEGER,
     error TEXT
+);
+-- Fetch schedules set through the API. A source without a row is fetched in full every
+-- LIFEAPI_SCRAPE_INTERVAL. With `partial` (one of the source's `Source.partials`), every
+-- `full_every`th fetch is full and the rest are that partial fetch.
+CREATE TABLE IF NOT EXISTS schedules (
+    source TEXT PRIMARY KEY,
+    interval_minutes INTEGER NOT NULL,
+    partial TEXT,
+    full_every INTEGER,
+    updated_at TEXT NOT NULL
 );
 """
 
@@ -122,8 +134,10 @@ def connect(path: Path | None = None, readonly: bool = False) -> Iterator[sqlite
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """Columns added after a table was first created."""
-    if "log" not in {r[1] for r in conn.execute("PRAGMA table_info(scrape_runs)")}:
-        conn.execute("ALTER TABLE scrape_runs ADD COLUMN log TEXT")
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(scrape_runs)")}
+    for name in ("log", "partial"):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE scrape_runs ADD COLUMN {name} TEXT")
 
 
 # Failed runs keep their trail (`log`) for this many of each source's latest runs.
@@ -135,9 +149,10 @@ def init_db(path: Path | None = None) -> None:
         pass
 
 
-def start_run(conn: sqlite3.Connection, source: str) -> int:
+def start_run(conn: sqlite3.Connection, source: str, partial: str | None = None) -> int:
     cur = conn.execute(
-        "INSERT INTO scrape_runs (source, started_at) VALUES (?, ?)", (source, now_iso())
+        "INSERT INTO scrape_runs (source, started_at, partial) VALUES (?, ?, ?)",
+        (source, now_iso(), partial),
     )
     conn.commit()
     return cur.lastrowid
@@ -173,8 +188,11 @@ def finish_run(
     conn.commit()
 
 
-def save_result(conn: sqlite3.Connection, source: str, result: ScrapeResult) -> None:
-    """Upsert everything from one successful source scrape and retire what disappeared."""
+def save_result(conn: sqlite3.Connection, source: str, result: ScrapeResult,
+                partial: bool = False) -> None:
+    """Upsert everything from one successful source scrape and retire what disappeared.
+    A partial scrape saw only part of the source, so it retires nothing; the next full
+    one does."""
     ts = now_iso()
 
     for c in result.courses:
@@ -212,11 +230,68 @@ def save_result(conn: sqlite3.Connection, source: str, result: ScrapeResult) -> 
             (g.source, g.id, g.course_name, g.term, g.model_dump_json(), ts, ts),
         )
 
-    for table in ("courses", "items", "grades"):
-        conn.execute(
-            f"UPDATE {table} SET active=0 WHERE source=? AND last_seen_at<?", (source, ts)
-        )
+    if not partial:
+        for table in ("courses", "items", "grades"):
+            conn.execute(
+                f"UPDATE {table} SET active=0 WHERE source=? AND last_seen_at<?", (source, ts)
+            )
     conn.commit()
+
+
+def get_schedule(conn: sqlite3.Connection, source: str, partials: Collection[str]) -> dict[str, Any]:
+    """`source`'s fetch schedule: the one set through the API, else the default (in full
+    every LIFEAPI_SCRAPE_INTERVAL). `partials` are the ones the source has; a stored partial
+    it no longer has reads as none."""
+    row = conn.execute("SELECT * FROM schedules WHERE source=?", (source,)).fetchone()
+    if row is None:
+        return {"interval_minutes": config.SCRAPE_INTERVAL_MINUTES, "partial": None,
+                "full_every": None, "default": True}
+    partial = row["partial"] if row["partial"] in partials else None
+    return {"interval_minutes": row["interval_minutes"], "partial": partial,
+            "full_every": row["full_every"] if partial else None, "default": False}
+
+
+def set_schedule(conn: sqlite3.Connection, source: str, interval_minutes: int,
+                 partial: str | None = None, full_every: int | None = None) -> None:
+    conn.execute(
+        """INSERT INTO schedules (source, interval_minutes, partial, full_every, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (source) DO UPDATE SET
+             interval_minutes=excluded.interval_minutes, partial=excluded.partial,
+             full_every=excluded.full_every, updated_at=excluded.updated_at""",
+        (source, interval_minutes, partial, full_every, now_iso()),
+    )
+    conn.commit()
+
+
+def reset_schedule(conn: sqlite3.Connection, source: str) -> None:
+    conn.execute("DELETE FROM schedules WHERE source=?", (source,))
+    conn.commit()
+
+
+def next_fetch(conn: sqlite3.Connection, source: str,
+               schedule: dict[str, Any]) -> tuple[datetime | None, str | None]:
+    """When `schedule` next fetches `source`, and which partial fetch that is (None: full).
+    The time is None if the source has never run (so it's due now). Every run counts,
+    scheduled or manual, failed or not: the interval runs from the last one's start, and
+    the `full_every`th run after a full one is full."""
+    last = conn.execute(
+        "SELECT started_at FROM scrape_runs WHERE source=? ORDER BY run_id DESC LIMIT 1", (source,)
+    ).fetchone()
+    if last is None:
+        return None, None
+    at = datetime.fromisoformat(last["started_at"]) + timedelta(minutes=schedule["interval_minutes"])
+    if not schedule["partial"]:
+        return at, None
+    last_full = conn.execute(
+        "SELECT MAX(run_id) FROM scrape_runs WHERE source=? AND partial IS NULL", (source,)
+    ).fetchone()[0]
+    if last_full is None:
+        return at, None
+    since = conn.execute(
+        "SELECT COUNT(*) FROM scrape_runs WHERE source=? AND run_id>?", (source, last_full)
+    ).fetchone()[0]
+    return at, schedule["partial"] if since < schedule["full_every"] - 1 else None
 
 
 def request_sync(conn: sqlite3.Connection, sources: list[str] | None) -> tuple[int, bool]:
@@ -283,6 +358,7 @@ def run_to_dict(row: sqlite3.Row, with_log: bool = False) -> dict[str, Any]:
     out = {
         "run_id": row["run_id"],
         "source": row["source"],
+        "partial": row["partial"] if "partial" in row.keys() else None,
         "started_at": row["started_at"],
         "finished_at": row["finished_at"],
         "ok": None if row["ok"] is None else bool(row["ok"]),
@@ -324,4 +400,5 @@ __all__ = [
     "finish_run", "save_result", "row_to_dict", "now_iso", "request_sync",
     "pending_sync_requests", "start_sync_requests", "finish_sync_request",
     "abandon_sync_requests", "sync_request_to_dict", "clear_sync_requests", "run_to_dict",
+    "get_schedule", "set_schedule", "reset_schedule", "next_fetch",
 ]

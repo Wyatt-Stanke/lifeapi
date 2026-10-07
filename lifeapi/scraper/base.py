@@ -36,12 +36,19 @@ class Source(ABC):
     name: ClassVar[str] = ""
     # Disabled sources are skipped unless requested explicitly with --only.
     enabled: ClassVar[bool] = True
+    # Partial fetches a schedule can run between full ones: name -> what it fetches (shown
+    # in the API and the explorer). `scrape()` checks `self.partial`. A partial result only
+    # adds and updates records; anything it doesn't return stays as it was.
+    partials: ClassVar[dict[str, str]] = {}
 
-    def __init__(self, context: BrowserContext, previous: dict[str, Item] | None = None):
+    def __init__(self, context: BrowserContext, previous: dict[str, Item] | None = None,
+                 partial: str | None = None):
         self.context = context
         # Items this source produced on earlier runs, keyed by id. Lets a source skip
         # re-fetching detail pages for things that haven't changed.
         self.previous = previous or {}
+        # One of `partials` for a partial fetch, None for a full one.
+        self.partial = partial
         self.log = logging.getLogger(f"lifeapi.source.{self.name}")
 
     @abstractmethod

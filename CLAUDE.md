@@ -7,9 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 lifeapi collects a student's schoolwork from several platforms into one SQLite database
 and serves it as a read-only HTTP API. The scraper and the API are separate processes on
 separate schedules. They share only `lifeapi/models.py` (pydantic models) and
-`lifeapi/storage.py` (SQLite access). The scraper runs every 2 hours via launchd
-(`deploy/`). The API stays up. The API's only write is queueing manual sync requests
-(`POST /sync`), which the scraper picks up (see "Manual sync" below).
+`lifeapi/storage.py` (SQLite access). launchd (`deploy/`) or the container loop runs the
+scraper with `--due` every minute, and it fetches the sources that are due on their
+schedules (see "Schedules" below). The API stays up. Its only writes are queueing manual
+sync requests (`POST /sync`) and setting schedules, both of which the scraper picks up.
 
 ## Commands
 
@@ -17,6 +18,8 @@ separate schedules. They share only `lifeapi/models.py` (pydantic models) and
 .venv/bin/pip install -e .                               # deps: patchright, fastapi, uvicorn, pydantic, python-dotenv
 .venv/bin/python -m lifeapi.scraper --list               # registered sources
 .venv/bin/python -m lifeapi.scraper --only vhl           # one source (use this to test a change)
+.venv/bin/python -m lifeapi.scraper --only infinite_campus --partial gpa   # one partial fetch
+.venv/bin/python -m lifeapi.scraper --due -v             # what the schedules say is due
 .venv/bin/python -m lifeapi.scraper --headed -v          # visible browser, debug logging
 .venv/bin/python -m lifeapi.api --port 8000              # API; OpenAPI docs at /docs
 .venv/bin/python frontend/serve.py --port 8080 --api http://127.0.0.1:8000   # explorer UI
@@ -52,8 +55,8 @@ College Board API responses contain access tokens, so delete scratch captures wh
   `scrape_runs`, and that source's existing data is left untouched.
 - `base.py`: the `Source` ABC plus the `@register` registry. A new platform is one module
   in `sources/` that's imported in `sources/__init__.py`. Sources get `self.previous`
-  (their items from the last run, used as a cache) and `self.map_pages()` (a pool of
-  parallel tabs; exceptions are returned, not raised).
+  (their items from the last run, used as a cache), `self.partial` (see "Schedules") and
+  `self.map_pages()` (a pool of parallel tabs; exceptions are returned, not raised).
 - `auth/`: `google_login` (handles account chooser, identifier, password and consent
   screens), `collegeboard_login` (Okta identifier step, then always picks the Password
   authenticator), and `clever.launch_app` (Clever dashboard tile, which may open a new tab).
@@ -88,7 +91,8 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
 - **Infinite Campus**: after SSO, calls `/campus/resources/portal/grades` and
   `/grades/detail/<sectionID>` with `page.request`, plus `/campus/api/campus/grading/gpas/my/gpa`
   for overall GPAs (this district shows only a weighted cumulative GPA, as a percentage that weighting can push past 100). The session cookie doesn't persist
-  across browser launches, so it signs in every run. Grades only, by request.
+  across browser launches, so it signs in every run. Grades only, by request. Its `gpa`
+  partial fetch signs in and calls only the GPA endpoint.
 - **VHL**: in-page `fetch` of `study_schedule/event_calendar/YYYY-MM` (HTML fragments
   listing the due dates) and `assignments_by_due_date?due_date=` (JSON). Never open
   activity URLs: that starts the activity.
@@ -123,20 +127,23 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
 
 ### Storage and API
 
-- `storage.py`: tables `courses`, `items`, `grades` and `scrape_runs`. Each row stores the
-  full model JSON in `data`, plus a few indexed columns used by API filters. `save_result`
-  upserts and then marks rows not seen in that run `active=0` (soft delete).
-  `datetime`s are stored as UTC ISO strings in the indexed columns.
+- `storage.py`: tables `courses`, `items`, `grades` and `scrape_runs`, plus `sync_requests`
+  and `schedules`. Each record row stores the full model JSON in `data`, plus a few indexed
+  columns used by API filters. `save_result` upserts and then, for a full run, marks rows
+  not seen in that run `active=0` (soft delete). `datetime`s are stored as UTC ISO strings
+  in the indexed columns. New columns go in both `SCHEMA` and `_migrate`. The API's `db()`
+  runs `init_db()` once per process, so reads work on a database an older scraper made.
 - The database is in WAL mode. Read-only connections deliberately use `mode=rw` with
   `PRAGMA query_only=ON`, not `mode=ro`: readers must be able to recreate the
   `-wal`/`-shm` files after the scraper exits. They also use `check_same_thread=False`,
   because FastAPI opens the per-request connection (the `db()` dependency) and uses it on
   different threadpool threads.
-- `api/app.py`: FastAPI, read-only apart from `/sync`. The optional `LIFEAPI_API_TOKEN`
-  bearer auth applies to everything except `/health` and `/gpa` (public so `/biggpa` works on
-  any device). Every list endpoint hides inactive rows unless `include_inactive=true`. The
-  API imports the scraper's `REGISTRY` (to validate sync requests and list never-run sources
-  in `/sources`), but never opens a browser.
+- `api/app.py`: FastAPI, read-only apart from `/sync` and `/sources/{source}/schedule`. The
+  optional `LIFEAPI_API_TOKEN` bearer auth applies to everything except `/health` and `/gpa`
+  (public so `/biggpa` works on any device). Every list endpoint hides inactive rows unless
+  `include_inactive=true`. The API imports the scraper's `REGISTRY` (to validate sync
+  requests and schedules, and list never-run sources and their partials in `/sources`), but
+  never opens a browser.
 - The OpenAPI spec (`/openapi.json`) is meant to be handed to a person or agent on its own,
   so it's the API's documentation. The overview (common questions, sources, ids, statuses,
   time zones) is `DESCRIPTION` in `api/schemas.py`. Field docs are the `Field(description=)`s
@@ -170,9 +177,9 @@ every enabled source) and touches `config.SYNC_TRIGGER` (`data/sync-requested`).
 request that already covers the sources is returned instead of a duplicate.
 
 - Every `runner.run()`, under the run lock: fails requests left `running` by a run that
-  died, deletes the trigger, then claims each pending request whose sources it covers. If
-  any stay pending, it re-touches the trigger. Deleting before reading means a request
-  queued mid-run is never missed.
+  died, deletes the trigger, then claims each pending request whose sources it fetches in
+  full (a partial run claims nothing). If any stay pending, it re-touches the trigger.
+  Deleting before reading means a request queued mid-run is never missed.
 - `--requested` runs the union of pending requests' sources, and returns before opening
   the browser if there are none.
 - Wakeups: launchd's `com.lifeapi.sync` job `WatchPaths` the trigger. The container's
@@ -180,13 +187,35 @@ request that already covers the sources is returned instead of a duplicate.
   Python's `run.lock` is separate from `scrape.sh`'s `scrape.lock`, because the Python
   process inherits the shell's flocked fd, and taking the same file again would deadlock.
 
+### Schedules
+
+`PUT /sources/{source}/schedule` stores a `schedules` row: `interval_minutes`, and
+optionally `partial` (a name from the source's `Source.partials`) with `full_every`. A
+source without a row is fetched in full every `LIFEAPI_SCRAPE_INTERVAL` seconds
+(`config.SCRAPE_INTERVAL_MINUTES`; the API reads it too, to report the default).
+
+- `storage.next_fetch()` derives everything from `scrape_runs`, so there's no counter to
+  keep in step: the next fetch is due `interval_minutes` after the last run's start (any
+  run: scheduled, manual, partial, failed), and it's full unless fewer than
+  `full_every - 1` runs followed the last full one. A source that never ran is due now, in
+  full. `scrape_runs.partial` records which partial a run did (NULL: full).
+- `--due` (`runner._due`) runs the enabled sources that are due, each as planned, and
+  returns before opening the browser if none are. launchd's `com.lifeapi.scraper` and
+  `scrape-loop.sh` run it every minute; "nothing due" logs at debug so it stays off the console.
+- A partial fetch is `Source.scrape()` with `self.partial` set: it returns only part of
+  the source's records, so `save_result(partial=True)` upserts and retires nothing.
+  `/sources`' `last_success_at` counts full runs only. To add a partial, add it to the
+  source's `partials` (name -> short description, shown in the explorer) and branch on
+  `self.partial`; the API, CLI (`--partial`) and explorer pick it up.
+
 ### Frontend (`frontend/`)
 
 A temporary, deliberately unstyled explorer: plain semantic HTML, no CSS, no build step.
 It's a user-facing wrapper (Today, Upcoming, Missing, Announcements, Courses, Grades,
-Search, Sync status with sync buttons), not an endpoint browser. Raw API access stays at `/api/docs`.
+Search, Sync status with sync buttons and schedule editors), not an endpoint browser. Raw
+API access stays at `/api/docs`.
 
-- `serve.py` is stdlib only. It proxies `/api/*` (GET, POST, DELETE; each method needs its
+- `serve.py` is stdlib only. It proxies `/api/*` (GET, POST, PUT, DELETE; each method needs its
   own `do_<METHOD>`, or `BaseHTTPRequestHandler` answers 501) to the API, so the API needs no CORS.
   It sends `X-Forwarded-Prefix: /api`, which the API's `forwarded_prefix` middleware turns
   into the request's `root_path`. That way `/api/docs` loads `/api/openapi.json`, and the

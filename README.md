@@ -7,7 +7,8 @@ The project has two halves that run separately:
 
 - **Scraper** (`python -m lifeapi.scraper`): a stealth headless Chrome
   ([patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python)) signs in to each
-  platform and writes to `data/lifeapi.db`. Run it on a schedule (every 2 hours).
+  platform and writes to `data/lifeapi.db`. Run `--due` every minute and it fetches each
+  source on its own schedule (every 2 hours unless set otherwise through the API).
 - **API** (`python -m lifeapi.api`): FastAPI, read-only over the same database except
   for queueing manual syncs (`POST /sync`), which the scraper picks up. Leave it running.
 
@@ -45,6 +46,7 @@ Optional settings:
 | `LIFEAPI_HEADLESS` | `1` | `0` shows the browser window. |
 | `LIFEAPI_BROWSER_CHANNEL` | `chrome` | Uses the installed Google Chrome. Set it to empty to use patchright's Chromium instead. |
 | `LIFEAPI_TIMEOUT_SCALE` | `3` | Multiplies the scraper's wait deadlines (page loads, selectors, logins). Raise it on a slow host. |
+| `LIFEAPI_SCRAPE_INTERVAL` | `7200` | Seconds between fetches of a source with no schedule set (see [Schedules](#schedules-and-partial-fetches)). The API reads it too, to report schedules, so give both the same value. |
 | `LIFEAPI_API_TOKEN` | unset | If set, the API requires `Authorization: Bearer <token>` on everything except `/health` and `/gpa`. |
 | `LIFEAPI_REAUTH_TARGET` | unset | The server's SSH destination (e.g. `root@vps`), or `--local`. Fills in the sign-in command that `/sources` shows when a login gets stuck. See [Finishing a sign-in challenge](#finishing-a-sign-in-challenge). |
 | `LIFEAPI_DATA_DIR` | `./data` | Holds the DB, the browser profile and debug snapshots. |
@@ -58,6 +60,8 @@ Optional settings:
 .venv/bin/python -m lifeapi.scraper --headed         # watch it
 .venv/bin/python -m lifeapi.scraper --list
 .venv/bin/python -m lifeapi.scraper --requested      # only what POST /sync has queued
+.venv/bin/python -m lifeapi.scraper --due            # only what's due on its schedule
+.venv/bin/python -m lifeapi.scraper --only infinite_campus --partial gpa   # a partial fetch
 
 .venv/bin/python -m lifeapi.api --port 8000          # docs at http://127.0.0.1:8000/docs
 ```
@@ -79,7 +83,7 @@ hours.
 
 ```sh
 cp deploy/com.lifeapi.*.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.lifeapi.scraper.plist   # every 2 h
+launchctl load ~/Library/LaunchAgents/com.lifeapi.scraper.plist   # every minute, runs what's due
 launchctl load ~/Library/LaunchAgents/com.lifeapi.api.plist       # always on, :8000
 launchctl load ~/Library/LaunchAgents/com.lifeapi.sync.plist      # runs POST /sync requests
 ```
@@ -88,9 +92,29 @@ The plists contain absolute paths to this checkout. Logs go to `data/scraper.log
 `data/api.log`. Only one scraper can use the browser profile at a time. A run that starts
 while another is going waits for it (`data/run.lock`), so manual runs and scheduled ones
 queue up instead of colliding. On Linux, the cron equivalent is
-`0 */2 * * * cd /path/to/lifeapi && .venv/bin/python -m lifeapi.scraper`, plus
+`* * * * * cd /path/to/lifeapi && .venv/bin/python -m lifeapi.scraper --due`, plus
 `* * * * * cd /path/to/lifeapi && test -e data/sync-requested && .venv/bin/python -m lifeapi.scraper --requested`
-for manual syncs.
+for manual syncs. If you installed the plists before schedules existed, copy and reload
+`com.lifeapi.scraper.plist` again: the old one runs every source in full every 2 hours.
+
+### Schedules and partial fetches
+
+Each source has a schedule: how often to fetch it, and optionally a cheaper partial fetch
+to do in between full ones. Infinite Campus has one partial fetch, `gpa`, which reads only
+the overall GPA. To read the GPA every 30 minutes and every grade every 2 hours:
+
+```sh
+curl -X PUT http://127.0.0.1:8000/sources/infinite_campus/schedule \
+  -H 'Content-Type: application/json' \
+  -d '{"interval_minutes": 30, "partial": "gpa", "full_every": 4}'
+```
+
+Every 4th fetch is then full and the other three are `gpa`. `DELETE` on the same path goes
+back to the default (in full every `LIFEAPI_SCRAPE_INTERVAL`). The explorer's Sync status
+page has the same controls ("change" under each schedule), and shows when each source is
+next fetched. The interval counts from the start of the source's last run, scheduled or
+manual. A partial fetch only adds and updates records; nothing is marked inactive until
+the next full one.
 
 ### Syncing on demand
 
@@ -99,8 +123,8 @@ queues a sync, and the explorer's Sync status page has buttons for it. The API r
 request in the database and touches `data/sync-requested`. The `com.lifeapi.sync` job
 watches that file and runs `python -m lifeapi.scraper --requested`. In containers, the
 scraper loop checks for it every `LIFEAPI_SYNC_POLL` seconds. If a run is already going, the
-request waits for it to finish. A scheduled run that covers a request's sources settles
-it too. Without the sync job or the container loop, requests stay `pending` until the
+request waits for it to finish. A scheduled run that fully fetches a request's sources
+settles it too. Without the sync job or the container loop, requests stay `pending` until the
 next scheduled run.
 
 ## Containers (Coolify, podman)
@@ -111,7 +135,7 @@ next scheduled run.
 |---|---|
 | `api` | The API on port 8000, inside the stack's network only. |
 | `frontend` | The explorer on port 8080. It proxies `/api/*` to `api`, so it's the only service that needs a public domain. The API docs are at `/api/docs`. |
-| `scraper` | A scrape at startup, then one every `LIFEAPI_SCRAPE_INTERVAL` seconds (default 7200). In between, it runs `POST /sync` requests within `LIFEAPI_SYNC_POLL` seconds (default 10). |
+| `scraper` | Every minute, runs the sources that are due on their [schedules](#schedules-and-partial-fetches) (by default every `LIFEAPI_SCRAPE_INTERVAL` seconds, 7200), so at startup it fetches whatever is overdue. In between, it runs `POST /sync` requests within `LIFEAPI_SYNC_POLL` seconds (default 10). |
 
 They share the `data` volume, which holds the DB, the browser profile and debug snapshots.
 On amd64 the image installs Google Chrome. On arm64 (podman on Apple Silicon) it installs
@@ -211,7 +235,9 @@ All list endpoints return only items still present at the source, unless you pas
 | `GET /courses` | Classes per source. |
 | `GET /grades` | Infinite Campus grades. Filters: `source`, `term`. |
 | `GET /gpa` | The cumulative weighted GPA as a bare number, a percentage always written to three decimal places (e.g. `99.150`). Weighting can lift it above 100. The `X-Last-Seen-At` header says when it was last scraped. Needs no token. |
-| `GET /sources` | Every source, whether it's enabled, and its last run (`null` if never): when it ran, whether it succeeded, the error, and counts. |
+| `GET /sources` | Every source, whether it's enabled, its partial fetches, its schedule and next fetch, and its last run (`null` if never): when it ran, whether it was partial, whether it succeeded, the error, and counts. |
+| `PUT /sources/{source}/schedule` | Set how often a source is fetched: JSON `{"interval_minutes": 30}`, optionally with `"partial"` and `"full_every"`. See [Schedules](#schedules-and-partial-fetches). |
+| `DELETE /sources/{source}/schedule` | Back to the default schedule. |
 | `POST /sync` | Queue a sync now. `source` (repeatable) limits it; omit for every enabled source. Returns the request (202, or 200 if a waiting request already covers it). See [Syncing on demand](#syncing-on-demand). |
 | `GET /sync` | Recent sync requests, newest first. `status`: `pending`, `running`, `done` or `failed` (with `error`). |
 | `DELETE /sync` | Clear the sync request list: deletes finished requests and cancels waiting ones. |

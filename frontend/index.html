@@ -51,7 +51,8 @@ tokenInput.addEventListener("change", () => {
   route();
 });
 
-async function api(path, params = {}, { method = "GET" } = {}) {
+// `json` is sent as the request body.
+async function api(path, params = {}, { method = "GET", json } = {}) {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v == null || v === "" || v === false) continue;
@@ -59,9 +60,12 @@ async function api(path, params = {}, { method = "GET" } = {}) {
   }
   const url = API + path + (qs.toString() ? "?" + qs : "");
   const headers = tokenInput.value ? { Authorization: `Bearer ${tokenInput.value}` } : {};
-  const res = await fetch(url, { method, headers });
+  if (json !== undefined) headers["Content-Type"] = "application/json";
+  const res = await fetch(url, { method, headers, body: json === undefined ? undefined : JSON.stringify(json) });
   const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(`${res.status}: ${body?.detail ?? res.statusText} (${url})`);
+  // 422s list their problems.
+  const detail = Array.isArray(body?.detail) ? body.detail.map((d) => d.msg).join("; ") : body?.detail;
+  if (!res.ok) throw new Error(`${res.status}: ${detail ?? res.statusText} (${url})`);
   return body;
 }
 
@@ -412,6 +416,47 @@ const failure = (error, command, runId) => h("span", {}, h("strong", {}, "Failed
     copyButton(async () => command, "Copy command")] : null) : null,
   runId != null ? runLog(runId) : null);
 
+// Minutes as "30 min", "2 h", "1 day 6 h".
+function duration(mins) {
+  const d = Math.floor(mins / 1440), hrs = Math.floor((mins % 1440) / 60), m = mins % 60;
+  return [d && `${d} day${d === 1 ? "" : "s"}`, hrs && `${hrs} h`, m && `${m} min`].filter(Boolean).join(" ");
+}
+const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? "th" : { 1: "st", 2: "nd", 3: "rd" }[n % 10] || "th");
+// A source's partial fetch, by its description (e.g. "Overall GPA only").
+const partialText = (s, name) => s.partials.find((p) => p.name === name)?.description ?? name;
+
+function scheduleText(s) {
+  const sc = s.schedule;
+  return `Every ${duration(sc.interval_minutes)}`
+    + (sc.partial ? `: ${partialText(s, sc.partial)}, everything every ${ordinal(sc.full_every)} time` : "")
+    + (sc.default ? " (default)" : "");
+}
+
+// A source's schedule editor. `save` gets the PUT or DELETE request's promise.
+function scheduleForm(s, save) {
+  const sc = s.schedule;
+  const path = `/sources/${encodeURIComponent(s.source)}/schedule`;
+  const interval = h("input", { type: "number", min: 5, step: 1, required: true, value: sc.interval_minutes });
+  const partial = h("select", {}, h("option", { value: "" }, "everything"),
+    s.partials.map((p) => h("option", { value: p.name, selected: p.name === sc.partial }, p.description)));
+  // Disabled while hidden, so the browser doesn't validate a field you can't see.
+  const fullEvery = h("input", { type: "number", min: 2, step: 1, required: true, value: sc.full_every ?? 4, disabled: !sc.partial });
+  const fullLine = h("p", { hidden: !sc.partial }, "and everything once every ", fullEvery, " fetches");
+  partial.addEventListener("change", () => { fullLine.hidden = fullEvery.disabled = !partial.value; });
+  return h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    save(api(path, {}, { method: "PUT", json: {
+      interval_minutes: Number(interval.value),
+      partial: partial.value || null,
+      full_every: partial.value ? Number(fullEvery.value) : null,
+    } }));
+  } },
+    h("p", {}, "Every ", interval, " minutes", s.partials.length ? [", fetch ", partial] : null),
+    s.partials.length ? fullLine : null,
+    h("p", {}, h("button", {}, "Save"), " ",
+      h("button", { type: "button", disabled: sc.default, onclick: () => save(api(path, {}, { method: "DELETE" })) }, "Reset to default")));
+}
+
 // Fills in and re-renders its own box (every 5 s while a sync is queued or running) rather
 // than going through route(), so there's no "Loading…" flash.
 async function viewStatus() {
@@ -421,6 +466,12 @@ async function viewStatus() {
   async function sync(sources) {
     try { await api("/sync", { source: sources }, { method: "POST" }); }
     catch (e) { alert(`Couldn't request a sync: ${e.message}`); }
+    render();
+  }
+
+  async function saveSchedule(request) {
+    try { await request; }
+    catch (e) { alert(`Couldn't change the schedule: ${e.message}`); return; } // leaves the form as it was
     render();
   }
 
@@ -437,17 +488,22 @@ async function viewStatus() {
     const active = requests.filter((r) => r.status === "pending" || r.status === "running");
     const enabled = sources.filter((s) => s.enabled).map((s) => s.source);
     const activeFor = (name) => active.find((r) => (r.sources ?? enabled).includes(name))?.status;
-    box.replaceChildren(
+    box.replaceChildren(...[ // unlike h(), replaceChildren() would print a null as "null"
       h("p", {}, h("button", { onclick: () => sync(), disabled: active.some((r) => !r.sources) }, "Sync all now")),
       h("table", { border: 1, cellpadding: 4 },
-        h("tr", {}, ["Source", "Last run", "Result", "Courses", "Items", "Grades", "Last success", ""].map((x) => h("th", {}, x))),
+        h("tr", {}, ["Source", "Schedule", "Next fetch", "Last run", "Result", "Courses", "Items", "Grades", "Last full success", ""].map((x) => h("th", {}, x))),
         sources.map((s) => {
-          const r = s.last_run;
+          const r = s.last_run, sc = s.schedule;
           const result = !r ? "never run" : r.ok == null ? (r.finished_at ? "?" : "running…") : r.ok ? "OK" : failure(r.error, s.login_command, r.has_log ? r.run_id : null);
           const state = activeFor(s.source);
           return h("tr", {},
             h("td", {}, sourceName(s.source), s.enabled ? null : h("small", {}, " (disabled)")),
-            h("td", {}, r ? when(r.started_at) : ""), h("td", {}, result),
+            h("td", {}, scheduleText(s),
+              h("details", { "data-schedule": s.source }, h("summary", {}, "change"), scheduleForm(s, saveSchedule))),
+            h("td", {}, !sc.next_fetch_at ? "—" : new Date(sc.next_fetch_at) <= new Date() ? "due now" : when(sc.next_fetch_at),
+              sc.next_fetch_partial ? h("small", {}, ` (${partialText(s, sc.next_fetch_partial)})`) : null),
+            h("td", {}, r ? when(r.started_at) : ""),
+            h("td", {}, result, r?.partial ? h("small", {}, ` (${partialText(s, r.partial)})`) : null),
             h("td", {}, r?.counts.courses ?? ""), h("td", {}, r?.counts.items ?? ""), h("td", {}, r?.counts.grades ?? ""),
             h("td", {}, s.last_success_at ? when(s.last_success_at) : "never"),
             h("td", {}, state === "running" ? "Syncing…" : state === "pending" ? "Queued"
@@ -464,13 +520,19 @@ async function viewStatus() {
           h("td", {}, when(r.finished_at)))))
         : h("p", {}, h("em", {}, "None yet.")),
       active.length ? h("p", {}, h("small", {}, "Refreshing while a sync is queued or running.")) : null,
-    );
-    // Stop once the page has been navigated away from.
-    if (active.length) timer = setTimeout(() => box.isConnected && render().catch(() => {}), 5000);
+    ].filter((x) => x != null));
+    function tick() {
+      if (!box.isConnected) return; // navigated away
+      if (box.querySelector("details[data-schedule][open]")) timer = setTimeout(tick, 5000); // don't wipe an edit
+      else render().catch(() => {});
+    }
+    if (active.length) timer = setTimeout(tick, 5000);
   }
 
   await render(); // errors on the first load go to route()'s "Couldn't load"
-  return [h("h1", {}, "Sync status"), box];
+  return [h("h1", {}, "Sync status"),
+    h("p", {}, h("small", {}, "Each source is fetched on its schedule. A partial fetch reads only part of a source (like Infinite Campus's GPA); a sync is always a full fetch.")),
+    box];
 }
 
 // ---------- link resolver: <this site>/<any source URL> → the matching page ----------
