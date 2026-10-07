@@ -149,6 +149,9 @@ The container has its own browser profile, separate from
 2. Under Environment Variables, set the required variables listed above.
 3. Give the `frontend` service a domain with the container port, for example
    `https://lifeapi.example.com:8080`. Leave `api` and `scraper` without a domain.
+   A second domain on `frontend` can show the big GPA page at its root: list both
+   (comma-separated) and add `--host-page <domain>=/biggpa` to its command in
+   `docker-compose.yaml`.
 4. Deploy. Watch the `scraper` logs for the first run. The first Google Classroom run
    reads every detail page and takes about 15 minutes.
 
