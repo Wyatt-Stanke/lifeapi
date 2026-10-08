@@ -24,7 +24,7 @@ from ... import config
 from ...models import Course, Item, ItemKind, ScrapeResult
 from ..auth.collegeboard import collegeboard_login, is_collegeboard_login_url, on_collegeboard_login
 from ..auth.google import LoginError
-from ..base import Source, register
+from ..base import SiteUnavailable, Source, register
 from ..browser import dump_debug, wait_for_url
 from ..dates import now
 
@@ -163,6 +163,8 @@ class APClassroom(Source):
             else:
                 if status == 200:
                     return body
+                if status >= 500:
+                    raise SiteUnavailable(f"AP Classroom's API answered HTTP {status} for {path}")
                 if status != 401 or retry:
                     raise RuntimeError(f"AP Classroom's API answered HTTP {status} for {path}")
                 why = "its token expired"

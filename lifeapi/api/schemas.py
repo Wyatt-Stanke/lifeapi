@@ -60,6 +60,13 @@ class LastRun(BaseModel):
                                           "`ExceptionType: message`, then indented `while …` "
                                           "lines saying what the scraper was doing, any "
                                           "`caused by …` lines, and the `last page:` URL.")
+    failure: Literal["scraper", "site", "login"] | None = Field(
+        description="Whose problem a failed run is; null unless `ok` is false. `scraper`: the "
+                    "scraper broke (a bug, or the site changed under it), so its code needs "
+                    "fixing. `site`: the site was down or unreachable (an HTTP 5xx, a network "
+                    "error). Nothing needs fixing; the next run tries again. `login`: a sign-in "
+                    "needs finishing by hand (see the source's `login_command`).",
+    )
     counts: RunCounts
     has_log: bool = Field(description="Whether the run kept a log (`GET /runs/{run_id}/log`). "
                                       "Only failed runs do, for each source's last 20 runs.")
@@ -271,7 +278,9 @@ When a platform gives only a date, deadlines become 23:59 and post dates 00:00 l
 
 **Deletions.** A record that disappears from its platform is kept with `active: false` and
 hidden from every list unless you pass `include_inactive=true`. If a source's scrape fails,
-its previous data stays as it was; check `GET /sources` before trusting stale data.
+its previous data stays as it was; check `GET /sources` before trusting stale data. A failed
+run's `failure` says whose problem it is: `site` (the site was down; the next run retries),
+`login` (a person has to finish a sign-in) or `scraper` (the scraper needs fixing).
 
 ## Schedules
 

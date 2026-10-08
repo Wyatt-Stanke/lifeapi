@@ -84,6 +84,11 @@ College Board API responses contain access tokens, so delete scratch captures wh
   gets a "while reading X" note, which `runner.describe_error` puts in
   `scrape_runs.error` with any chained cause and the last page URL. Bare Playwright
   timeouts don't say what they waited for, so wrap waits in steps.
+- Whose fault: `runner.failure_kind` files each failed run under `scrape_runs.failure`
+  (the API's `failure`): `login` for a `LoginError` anywhere in the chain, `site` for
+  `base.SiteUnavailable` or one of Chrome's can't-connect errors, `scraper` for anything
+  else. When a site answers an HTTP 5xx, raise `SiteUnavailable`, so an outage (Clever's
+  portal answering 503, say) doesn't read as a scraper bug or offer a sign-in fix.
 - Run trail (`trail.py`): each source run records every `lifeapi.*` log line (debug
   too: `__main__` sets the logger to DEBUG and filters the console instead) plus browser
   activity (navigations, XHR/fetch responses, HTTP errors, failed requests, console
@@ -199,7 +204,7 @@ command's stdin (SSH gives sudo no TTY to prompt on). `-k` makes sure sudo alway
 that line, so it never ends up in the VNC stream. The container's `sh` is
 dash: its `kill` rejects `--`, so process groups are killed with `kill -TERM "-$PGID"`.
 `/sources` adds `login_command` (built from `LIFEAPI_REAUTH_TARGET`) when the last run
-failed with `LoginError`, and the Sync status page shows it under the error.
+failed with `failure` `login` (a `LoginError`), and the Sync status page shows it under the error.
 
 ### Manual sync
 

@@ -33,6 +33,11 @@ def register(cls: type["Source"]) -> type["Source"]:
     return cls
 
 
+class SiteUnavailable(RuntimeError):
+    """The site failed, not the scraper: it answered with an HTTP 5xx, say. There's nothing
+    to fix, and the next run tries again. The run is recorded with `failure="site"`."""
+
+
 class Source(ABC):
     name: ClassVar[str] = ""
     # Disabled sources are skipped unless requested explicitly with --only.
