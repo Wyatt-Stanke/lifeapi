@@ -419,103 +419,194 @@ async function viewItem(source, id) {
     announcement ? api("/extra/assignments", { source, announcement_id: id }).catch(() => []) : [],
     api("/extra/commands", { source, item_id: id, limit: 10 }).catch(() => []),
   ]);
+  const ed = editors(it, actions[0]?.action_id);
+  const name = sourceName(it.source);
   const fromHref = custom && `#/item/${encodeURIComponent(it.source)}/${encodeURIComponent(it.converted_from)}`;
-  const theirs = it.user?.due_at && !custom
-    ? h("small", {}, h("br"), `${sourceName(it.source)} says `, it.source_due_at ? fullDate(it.source_due_at) : "none", ".")
-    : null;
+  const yours = (s) => h("small", {}, h("br"), s);
+  let dueMine = null;
+  if (it.user?.due_at && !custom) {
+    dueMine = yours(it.source_due_at && new Date(it.user.due_at).getTime() === new Date(it.source_due_at).getTime()
+      ? `Yours: kept even if ${name} changes it.`
+      : `Yours. ${name} says ${it.source_due_at ? fullDate(it.source_due_at) : "none"}.`);
+  }
+  let statusMine = null;
+  if (it.user?.status && !custom) {
+    statusMine = yours(it.status === it.user.status
+      ? `Yours. ${name} says ${label(it.source_status) || "nothing"}.`
+      : `Yours: kept ${DONE.has(it.user.status) ? "turned in" : "not turned in"} even if ${name} changes it.`);
+  }
+  const none = () => h("em", {}, "None");
+  // [name, value, editor]: rows with an editor show even when empty.
+  const empty = (v) => !v || (Array.isArray(v) && !v.length);
   const facts = [
     ["Course", courseLink(it)],
-    ["From", custom ? ["You, from ", h("a", { href: fromHref }, `an announcement in ${sourceName(it.source)}`), ` · ${label(it.kind)}`]
-      : `${sourceName(it.source)} · ${label(it.kind)}`],
+    ["From", custom ? ["You, from ", h("a", { href: fromHref }, `an announcement in ${name}`)] : name],
+    ["Kind", label(it.kind), custom && ed.kind],
     ["Posted by", it.author],
     ["Posted", it.posted_at && [fullDate(it.posted_at), " (", relative(it.posted_at), ")"]],
-    ["Due", it.due_at ? [fullDate(it.due_at), " (", relative(it.due_at), ")", theirs] : it.due_text],
-    ["Status", it.user?.status && it.status === it.user.status
-      ? [label(it.status), h("small", {}, h("br"), `${sourceName(it.source)} says ${label(it.source_status) || "nothing"}.`)]
-      : label(it.status)],
-    ["Points", score(it)],
+    ["Due", it.due_at ? [fullDate(it.due_at), " (", relative(it.due_at), ")", dueMine] : it.due_text, !announcement && ed.due],
+    ["Status", it.status ? [label(it.status), statusMine] : null, !announcement && it.kind !== "material" && ed.status],
+    ["Points", score(it), custom && ed.points],
+    ["Note", it.user?.note ? text(it.user.note) : null, ed.note],
     ["Archived", it.active === false ? "Yes — no longer seen in the source" : null],
-  ].filter(([, v]) => v && (!Array.isArray(v) || v.length));
+  ].filter(([, v, edit]) => edit || !empty(v));
+  const titleEdit = custom && ed.title();
+  const descEdit = custom && ed.description();
   const convertSlot = h("div");
   return [
     h("p", {}, h("a", { href: "javascript:history.back()" }, "← Back")),
-    h("h1", {}, it.title),
-    it.url ? h("p", {}, h("a", { href: it.url, target: "_blank" }, `Open ${custom ? "the announcement" : ""} in ${sourceName(it.source)} ↗`)) : null,
-    h("table", {}, facts.map(([k, v]) => h("tr", {}, h("th", { align: "left" }, k), h("td", {}, v)))),
-    announcement || it.kind === "material" ? null : statusButton(it),
-    custom ? customControls(it) : null,
+    h("h1", {}, it.title, titleEdit ? [" ", titleEdit.button] : null), titleEdit?.holder,
+    it.url ? h("p", {}, h("a", { href: it.url, target: "_blank" }, `Open ${custom ? "the announcement" : ""} in ${name} ↗`)) : null,
+    h("table", {}, facts.flatMap(([k, v, edit]) => {
+      const e = edit && edit({ row: true });
+      return [h("tr", {}, h("th", { align: "left", valign: "top" }, k), h("td", {}, empty(v) ? none() : v), h("td", { valign: "top" }, e?.button)), e?.holder];
+    })),
+    custom ? h("p", {}, deleteButton(it)) : null,
     announcement ? [
       made.length ? h("p", {}, "Made from this: ", made.flatMap((x, i) => [i ? ", " : "", h("a", { href: itemHref(x) }, x.title)])) : null,
       h("p", {}, h("button", { onclick: () => openConvert(it, convertSlot) }, "Convert to assignment")), convertSlot,
     ] : null,
-    announcement ? null : dueForm(it),
-    noteForm(it),
-    commandSection(it, actions),
-    it.description ? [h("h2", {}, "Description"), text(it.description)] : null,
+    it.description || custom ? [h("h2", {}, "Description", descEdit ? [" ", descEdit.button] : null), descEdit?.holder,
+      it.description ? text(it.description) : h("p", {}, none())] : null,
     it.attachments?.length ? [h("h2", {}, "Attachments"), attachments(it.attachments)] : null,
     it.extra?.submitted_work?.length ? [h("h2", {}, "Your submitted work"), attachments(it.extra.submitted_work)] : null,
     it.comments?.length ? [h("h2", {}, "Comments"), h("ul", {}, it.comments.map((c) => h("li", {},
       h("strong", {}, c.author || "?"), c.private ? " (private)" : "", c.posted_at ? ` · ${c.posted_at}` : "", ": ", c.text)))] : null,
     h("details", {}, h("summary", {}, "All data"), h("pre", {}, JSON.stringify(it, null, 2))),
+    commandSection(it, actions),
   ];
 }
 
-// Marks an item turned in or not, in lifeapi only, as an undoable command.
-function statusButton(it) {
-  const done = DONE.has(it.status);
-  const go = (command) => { location.hash = `${itemHref(it)}?do=${encodeURIComponent(command)}`; };
-  return h("p", {}, h("button", { onclick: () => go(done ? "not done" : "done") },
-    it.converted_from != null ? (done ? "Mark not done" : "Mark done") : (done ? "Mark not turned in" : "Mark turned in")));
+// A ✎ button for one field, and the holder its editor opens in (a table row under the field's
+// row, or a block). One editor is open at a time; Escape or Cancel closes it.
+let closeEditor = () => {};
+function editable(field, makeForm, { row = false } = {}) {
+  const box = h(row ? "td" : "div", row ? { colspan: 3 } : {});
+  const holder = row ? h("tr", {}, box) : box;
+  holder.hidden = true;
+  const button = h("button", { type: "button", title: `Edit ${field}`, "aria-label": `Edit ${field}`, "aria-expanded": "false" }, "✎");
+  button.addEventListener("click", () => {
+    const open = button.getAttribute("aria-expanded") === "true";
+    closeEditor();
+    if (open) return;
+    const close = () => {
+      holder.hidden = true; box.replaceChildren(); button.setAttribute("aria-expanded", "false");
+      closeEditor = () => {};
+    };
+    const form = makeForm(close);
+    form.addEventListener("keydown", (e) => { if (e.key === "Escape") { close(); button.focus(); } });
+    box.replaceChildren(form);
+    holder.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+    closeEditor = close;
+    form.querySelector("input:checked, input:not([type=radio]), textarea, select")?.focus();
+  });
+  return { button, holder };
 }
 
-// The student's own deadline for an item, kept in lifeapi only.
-function dueForm(it) {
+// The small form an editor opens: its fields, then Save, any extra buttons, Cancel, and a hint.
+function editForm(legend, fields, { onsave, save = h("button", {}, "Save"), extra = [], hint, close }) {
+  return h("form", { onsubmit: (e) => { e.preventDefault(); onsave(); } },
+    h("fieldset", {}, h("legend", {}, legend),
+      fields,
+      h("p", {}, save, extra.filter(Boolean).flatMap((b) => [" ", b]), " ", h("button", { type: "button", onclick: close }, "Cancel")),
+      hint ? h("p", {}, h("small", {}, hint)) : null));
+}
+
+// The editors on an item page. `last` is the item's latest action when the page loaded, so after
+// a save the page shows the new one (with Undo) if the save logged one.
+function editors(it, last) {
   const custom = it.converted_from != null;
-  const due = h("input", { type: "datetime-local", required: true, value: toLocalInput(it.due_at) });
-  const send = async (opts) => { if (await write("change the deadline", itemPath(it) + "/due", opts)) route(); };
-  return h("details", { open: !!it.user?.due_at && !custom },
-    h("summary", {}, custom ? "Change the deadline" : it.user?.due_at ? "Your deadline" : "Change the deadline"),
-    h("form", { onsubmit: (e) => { e.preventDefault(); send({ method: "PUT", json: { due_at: fromLocalInput(due.value) } }); } },
-      h("p", {}, h("label", {}, "Due ", due), " ", h("button", {}, "Save"), " ",
-        it.user?.due_at ? h("button", { type: "button", onclick: () => send({ method: "DELETE" }) },
-          custom ? "Remove the deadline" : `Go back to ${sourceName(it.source)}'s (${it.source_due_at ? fullDate(it.source_due_at) : "none"})`) : null)));
+  const name = sourceName(it.source);
+  const reload = async () => {
+    const [a] = await api("/extra/commands", { source: it.source, item_id: it.id, limit: 1 }).catch(() => []);
+    const target = itemHref(it) + (a && a.action_id !== last ? `?did=${a.action_id}` : "");
+    if (location.hash === target) route(); else location.hash = target;
+  };
+  const mark = (what, path) => async (opts) => { if (await write(what, itemPath(it) + path, opts)) reload(); };
+  const patch = async (json) => { if (await write("update the assignment", customPath(it), { method: "PATCH", json })) route(); };
+  const button = (text, onclick) => h("button", { type: "button", onclick }, text);
+  // Saving the value a field already has keeps it, so it says "Keep" while that's what it'd do.
+  const keepLabel = (save, same) => { save.textContent = same() ? "Keep" : "Save"; };
+
+  const due = (opts) => editable("due date", (close) => {
+    const send = mark("change the deadline", "/due");
+    const input = h("input", { type: "datetime-local", required: true, value: toLocalInput(it.due_at), "aria-label": "Due" });
+    const save = h("button", {});
+    const same = () => !custom && !it.user?.due_at && it.source_due_at && input.value === toLocalInput(it.source_due_at);
+    input.addEventListener("input", () => keepLabel(save, same));
+    keepLabel(save, same);
+    const reset = it.user?.due_at
+      ? button(custom ? "Remove" : `Use ${name}'s (${it.source_due_at ? fullDate(it.source_due_at) : "none"})`, () => send({ method: "DELETE" }))
+      : null;
+    return editForm("Due date", h("p", {}, input), {
+      close, save, extra: [reset],
+      onsave: () => send({ method: "PUT", json: { due_at: fromLocalInput(input.value) } }),
+      hint: custom ? null : `Only in lifeapi. It stays even if ${name} changes its deadline.`,
+    });
+  }, opts);
+
+  const status = (opts) => editable("status", (close) => {
+    const send = mark("change the status", "/status");
+    const done = DONE.has(it.status);
+    const choice = (value, text) => h("label", {}, h("input", { type: "radio", name: "turned_in", value, checked: (value === "1") === done }), " ", text);
+    const choices = h("p", {}, choice("1", custom ? "Done" : "Turned in"), " ", choice("0", custom ? "Not done" : "Not turned in"));
+    const picked = () => choices.querySelector("input:checked").value === "1";
+    const save = h("button", {});
+    const same = () => !custom && !it.user?.status && picked() === done;
+    choices.addEventListener("change", () => keepLabel(save, same));
+    keepLabel(save, same);
+    const reset = !custom && it.user?.status
+      ? button(`Use ${name}'s (${label(it.source_status) || "none"})`, () => send({ method: "DELETE" }))
+      : null;
+    return editForm("Status", choices, {
+      close, save, extra: [reset],
+      onsave: () => send({ method: "PUT", json: { turned_in: picked(), keep: true } }),
+      hint: custom ? null : `Only in lifeapi. It stays even if ${name} changes its status.`,
+    });
+  }, opts);
+
+  const note = (opts) => editable("note", (close) => {
+    const send = mark("save the note", "/note");
+    const input = h("textarea", { rows: 4, cols: 60, maxlength: 10000, placeholder: "Only you see this", "aria-label": "Note" }, it.user?.note || "");
+    return editForm("Note", h("p", {}, input), {
+      close, extra: [it.user?.note ? button("Delete note", () => send({ method: "DELETE" })) : null],
+      onsave: () => send(input.value.trim() ? { method: "PUT", json: { note: input.value } } : { method: "DELETE" }),
+    });
+  }, opts);
+
+  // An assignment made in lifeapi: its own title, kind, points and description.
+  const title = (opts) => editable("title", (close) => {
+    const input = h("input", { size: 60, required: true, maxlength: 300, value: it.title, "aria-label": "Title" });
+    return editForm("Title", h("p", {}, input), { close, onsave: () => patch({ title: input.value }) });
+  }, opts);
+  const kind = (opts) => editable("kind", (close) => {
+    const input = h("select", { "aria-label": "Kind" }, ["assignment", "quiz"].map((k) => h("option", { value: k, selected: k === it.kind }, label(k))));
+    return editForm("Kind", h("p", {}, input), { close, onsave: () => patch({ kind: input.value }) });
+  }, opts);
+  const points = (opts) => editable("points", (close) => {
+    const input = h("input", { type: "number", min: 0, step: "any", size: 6, value: it.points_possible ?? "", "aria-label": "Points possible" });
+    return editForm("Points possible", h("p", {}, input), {
+      close, onsave: () => patch({ points_possible: input.value === "" ? null : Number(input.value) }),
+      hint: "Leave it empty for none.",
+    });
+  }, opts);
+  const description = (opts) => editable("description", (close) => {
+    const input = h("textarea", { rows: 6, cols: 70, "aria-label": "Description" }, it.description || "");
+    return editForm("Description", h("p", {}, input), { close, onsave: () => patch({ description: input.value || null }) });
+  }, opts);
+
+  return { due, status, note, title, kind, points, description };
 }
 
-// The student's note on an item, kept in lifeapi only.
-function noteForm(it) {
-  const note = h("textarea", { rows: 4, cols: 70, maxlength: 10000, placeholder: "Only you see this" }, it.user?.note || "");
-  const send = async (opts) => { if (await write("save the note", itemPath(it) + "/note", opts)) route(); };
-  return [h("h2", {}, "Note"),
-    h("form", { onsubmit: (e) => { e.preventDefault(); send({ method: "PUT", json: { note: note.value } }); } },
-      note, h("p", {}, h("button", {}, "Save note"), " ",
-        it.user?.note ? h("button", { type: "button", onclick: () => send({ method: "DELETE" }) }, "Delete note") : null))];
-}
-
-// Edit / delete for an assignment made from an announcement.
-function customControls(it) {
-  const send = async (json) => { if (await write("update the assignment", customPath(it), { method: "PATCH", json })) route(); };
-  const title = h("input", { size: 60, required: true, maxlength: 300, value: it.title });
-  const kind = h("select", {}, ["assignment", "quiz"].map((k) => h("option", { value: k, selected: k === it.kind }, label(k))));
-  const points = h("input", { type: "number", min: 0, step: "any", size: 6, value: it.points_possible ?? "" });
-  const description = h("textarea", { rows: 6, cols: 70 }, it.description || "");
-  return [
-    h("p", {},
-      h("button", { onclick: async () => {
-        if (!confirm(`Delete “${it.title}”? The announcement stays.`)) return;
-        if (await write("delete the assignment", customPath(it), { method: "DELETE" }) !== undefined) {
-          location.hash = `#/item/${encodeURIComponent(it.source)}/${encodeURIComponent(it.converted_from)}`;
-        }
-      } }, "Delete")),
-    h("details", {}, h("summary", {}, "Edit"),
-      h("form", { onsubmit: (e) => { e.preventDefault(); send({
-        title: title.value, kind: kind.value, description: description.value || null,
-        points_possible: points.value === "" ? null : Number(points.value),
-      }); } },
-        h("p", {}, h("label", {}, "Title ", title)),
-        h("p", {}, h("label", {}, "Kind ", kind), " ", h("label", {}, "Points ", points)),
-        h("p", {}, h("label", {}, "Description", h("br"), description)),
-        h("p", {}, h("button", {}, "Save")))),
-  ];
+// Deletes an assignment made from an announcement, then goes to the announcement.
+function deleteButton(it) {
+  return h("button", { onclick: async () => {
+    if (!confirm(`Delete “${it.title}”? The announcement stays.`)) return;
+    if (await write("delete the assignment", customPath(it), { method: "DELETE" }) !== undefined) {
+      location.hash = `#/item/${encodeURIComponent(it.source)}/${encodeURIComponent(it.converted_from)}`;
+    }
+  } }, "Delete this assignment");
 }
 
 function gradeTable(grades) {

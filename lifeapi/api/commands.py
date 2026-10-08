@@ -124,16 +124,20 @@ def interpret(command: str, item: dict[str, Any], now: datetime,
     if _REDO_RE.fullmatch(raw):
         return REDO
     if _NOTE_CLEAR_RE.fullmatch(raw):
-        return _note(item, None, append=False)
+        return note_plan(item, None)
     if m := _NOTE_RE.match(raw):
-        return _note(item, m.group("text").strip(), append=bool(m.group("add")))
+        append = bool(m.group("add"))
+        plan = note_plan(item, m.group("text").strip(), append)
+        if not append and (item.get("user") or {}).get("note"):
+            plan.notes.append("Start with “add note” to add to it instead.")
+        return plan
     if _NOT_DONE_RE.fullmatch(raw):
         return status_plan(item, done=False)
     if _DONE_RE.fullmatch(raw):
         return status_plan(item, done=True)
     text = normalize(raw)
     if _REMOVE_RE.fullmatch(text) or _RESET_RE.fullmatch(text):
-        return _reset_due(item, now, remove=bool(_REMOVE_RE.fullmatch(text)))
+        return reset_due_plan(item, now, remove=bool(_REMOVE_RE.fullmatch(text)))
     if (shift := _shift(text)) is not None:
         return _shift_due(item, now, shift)
     if plan := _set_due(text, item, now, usual):
@@ -143,8 +147,11 @@ def interpret(command: str, item: dict[str, Any], now: datetime,
     raise CommandError(400, f"Couldn't understand {quote(raw)}. Try {EXAMPLES}.")
 
 
-def _note(item: dict[str, Any], text: str | None, append: bool) -> Plan:
+def note_plan(item: dict[str, Any], text: str | None, append: bool = False) -> Plan:
+    """Set the note to `text` (None deletes it), or add `text` to it as a line."""
     old = (item.get("user") or {}).get("note")
+    if text is not None and text == old:
+        return Plan({}, f"The note already says {quote(text)}.")
     if text is None:
         if not old:
             return Plan({}, "There's no note to delete.")
@@ -152,8 +159,7 @@ def _note(item: dict[str, Any], text: str | None, append: bool) -> Plan:
     if append and old:
         return Plan({"note": f"{old}\n{text}"}, f"Added to the note: {quote(text)}.")
     if old:
-        return Plan({"note": text}, f"Note set to {quote(text)}, replacing {quote(old)}.",
-                    ["Start with “add note” to add to it instead."])
+        return Plan({"note": text}, f"Note set to {quote(text)}, replacing {quote(old)}.")
     return Plan({"note": text}, f"Note set to {quote(text)}.")
 
 
@@ -161,10 +167,11 @@ def label(status: str | None) -> str:
     return (status or "no status").replace("_", " ")
 
 
-def status_plan(item: dict[str, Any], done: bool) -> Plan:
+def status_plan(item: dict[str, Any], done: bool, keep: bool = False) -> Plan:
     """Mark `item` finished or not. A custom item's status is its own (`done`/`assigned`). A
     scraped one's stays the platform's in `source_status`; the student's (`turned_in`/
-    `assigned`) is kept only while it disagrees with that, so it's cleared when they agree."""
+    `assigned`) is kept only while it disagrees with that, so it's cleared when they agree,
+    unless `keep`: then it's stored either way, so it holds if the platform's changes."""
     if item.get("kind") in ("announcement", "material"):
         raise CommandError(409, f"{item['kind'].capitalize()}s aren't turned in.")
     if item.get("converted_from") is not None:
@@ -175,18 +182,50 @@ def status_plan(item: dict[str, Any], done: bool) -> Plan:
     name = source_name(item["source"])
     theirs = item.get("source_status")
     mine = (item.get("user") or {}).get("status")
+    status = "turned_in" if done else "assigned"
+    said = "turned in" if done else "not turned in"
     if (theirs in DONE_STATUSES) == done:
+        if keep:
+            if mine == status:
+                return Plan({}, f"It's already kept as {said}.")
+            return Plan({"status": status}, f"Kept it {said}, even if {name} changes its status.")
         if mine is None:
             return Plan({}, f"{name} already has it as {label(theirs)}.")
         return Plan({"status": None}, f"Status back to {name}'s: {label(theirs)}.")
-    status = "turned_in" if done else "assigned"
     if mine == status:
-        return Plan({}, "It's already marked turned in." if done else "It's already marked not turned in.")
-    return Plan({"status": status}, "Marked turned in." if done else "Marked not turned in.",
+        return Plan({}, f"It's already marked {said}.")
+    return Plan({"status": status}, f"Marked {said}.",
                 [f"Only in lifeapi: {name} still has it as {label(theirs)}."])
 
 
-def _reset_due(item: dict[str, Any], now: datetime, remove: bool) -> Plan:
+def reset_status_plan(item: dict[str, Any]) -> Plan:
+    """Drop the student's status on a scraped item, so the platform's counts again."""
+    if item.get("converted_from") is not None:
+        raise CommandError(409, "It was made in lifeapi, so it has no platform status to go back "
+                                "to; mark it turned in or not instead.")
+    name = source_name(item["source"])
+    if not (item.get("user") or {}).get("status"):
+        return Plan({}, f"The status is already {name}'s: {label(item.get('source_status'))}.")
+    return Plan({"status": None}, f"Status back to {name}'s: {label(item.get('source_status'))}.")
+
+
+def due_plan(item: dict[str, Any], due_utc: str, now: datetime) -> Plan:
+    """Set the student's deadline to `due_utc`, even when it's the platform's own: stored, it
+    holds if the platform's changes."""
+    new, current = local(due_utc), local(item.get("due_at"))
+    mine = (item.get("user") or {}).get("due_at")
+    notes = _past(new, now)
+    if mine and current == new:
+        return Plan({}, f"It's already due {when_text(new, now)}.", notes)
+    if current == new and item.get("converted_from") is None:
+        name = source_name(item["source"])
+        return Plan({"due_at": due_utc}, f"Kept the due date at {when_text(new, now)}, even if "
+                                         f"{name} changes it.", notes)
+    was = f" (was {when_text(current, now)})" if current else " (it had none)"
+    return Plan({"due_at": due_utc}, f"Due date set to {when_text(new, now)}{was}.", notes)
+
+
+def reset_due_plan(item: dict[str, Any], now: datetime, remove: bool = False) -> Plan:
     custom = item.get("converted_from") is not None
     current = local(item.get("due_at"))
     mine = (item.get("user") or {}).get("due_at")
