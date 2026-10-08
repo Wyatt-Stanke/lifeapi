@@ -44,13 +44,22 @@ class Attachment(BaseModel):
 class Comment(BaseModel):
     """A comment on an item (Google Classroom class or private comments)."""
 
+    id: str | None = Field(None, description="The source's id for the comment, unique within "
+                                             "`source`. Null on comments read before ids were kept.")
     author: str | None = Field(None, description="Commenter's display name.")
     text: str = Field(description="Comment text.")
     posted_at: str | None = Field(
         None,
         description="When it was posted, exactly as the source displays it (often partial "
-                    "or relative, e.g. `Sep 3`). Not machine-parseable.",
+                    "or relative, e.g. `Sep 3`). Not machine-parseable: see `posted_time`.",
         examples=["Sep 3"],
+    )
+    posted_time: datetime | None = Field(
+        None,
+        description="`posted_at` read as a time, ISO 8601 with UTC offset (the school's local "
+                    "time), counting from when the comment was read. A date without a time "
+                    "becomes 00:00. Null when `posted_at` couldn't be read as a date.",
+        examples=["2026-09-03T00:00:00-04:00"],
     )
     private: bool = Field(False, description="True for a private comment between the student "
                                              "and teacher; false for a class comment.")
@@ -164,6 +173,9 @@ class GradeEntry(BaseModel):
 # Infinite Campus publishes GPAs to three decimal places (e.g. "99.150"). A JSON number
 # can't keep the trailing zero, so anything that writes a GPA out as text pads it to this.
 GPA_PLACES = 3
+
+# Statuses that mean the student is finished with an item. The explorer's `DONE` mirrors this.
+DONE_STATUSES = ("turned_in", "completed", "graded", "done", "returned", "handed_in")
 
 
 class Grade(BaseModel):

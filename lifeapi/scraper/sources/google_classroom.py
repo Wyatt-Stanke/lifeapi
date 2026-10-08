@@ -109,6 +109,17 @@ def snake(s: str | None) -> str | None:
     return re.sub(r"\W+", "_", s.strip().lower()).strip("_") if s else None
 
 
+def comments(found: list[dict], reference: datetime | None = None) -> list[Comment]:
+    """Comments as DETAIL_JS reads them. Their dates are often relative ("10:42 AM" is today),
+    so `posted_time` is resolved now, against `reference` (when they were read)."""
+    return [
+        Comment(id=c.get("id"), author=c["author"], text=c["text"], posted_at=c["posted_at"],
+                posted_time=parse_display_date(c["posted_at"], prefer=CY, posted=True, reference=reference),
+                private=c["private"])
+        for c in found
+    ]
+
+
 @register
 class GoogleClassroom(Source):
     name = "google_classroom"
@@ -321,6 +332,9 @@ class GoogleClassroom(Source):
                   "score", "attachments", "comments"):
             setattr(item, f, getattr(prev, f))
         item.extra = {**prev.extra, **item.extra}
+        # Comments cached before `posted_time` was kept were read with the detail page.
+        if (fetched := prev.extra.get("detail_fetched_at")) and any(not c.id for c in item.comments):
+            item.comments = comments([c.model_dump() for c in item.comments], datetime.fromisoformat(fetched))
 
     async def _fill_detail(self, page: Page, item: Item) -> None:
         await page.goto(item.url)
@@ -368,10 +382,7 @@ class GoogleClassroom(Source):
             item.extra["links"] = d["links"]
         if d["submitted"]:
             item.extra["submitted_work"] = d["submitted"]
-        item.comments = [
-            Comment(author=c["author"], text=c["text"], posted_at=c["posted_at"], private=c["private"])
-            for c in d["comments"]
-        ]
+        item.comments = comments(d["comments"])
         item.extra["detail_fetched_at"] = now().isoformat()
 
     # -- announcements ----------------------------------------------------------------
@@ -457,7 +468,10 @@ class GoogleClassroom(Source):
             item.extra["read_at"] = read_at
             prev = self.previous.get(item.id)
             if p["comment_count"]:
-                if prev and prev.comments and prev.extra.get("comment_count") == p["comment_count"]:
+                # Comments cached without ids predate `posted_time`, and when they were read
+                # isn't known, so they're read again.
+                if (prev and prev.comments and prev.extra.get("comment_count") == p["comment_count"]
+                        and all(c.id for c in prev.comments)):
                     item.comments = prev.comments
                 else:
                     with_comments.append(item)
@@ -492,7 +506,4 @@ class GoogleClassroom(Source):
             self.log.warning("Fewer comments than expected on %s", item.url)
         d = await page.evaluate(js.DETAIL_JS)
         if d:
-            item.comments = [
-                Comment(author=c["author"], text=c["text"], posted_at=c["posted_at"], private=c["private"])
-                for c in d["comments"]
-            ]
+            item.comments = comments(d["comments"])
