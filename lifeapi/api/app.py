@@ -1,7 +1,9 @@
 """HTTP API over the scraped data. Runs independently of the scraper and only reads the
 SQLite database the scraper writes, except for queueing and clearing manual sync requests
 (`/sync`) and setting fetch schedules (`/sources/{source}/schedule`) and browser settings
-(`/sources/{source}/browser`), which the scraper picks up.
+(`/sources/{source}/browser`), which the scraper picks up, and the student's own additions:
+notes and deadlines on items (`/items/{source}/{item_id}/note`, `/due`) and assignments made
+from announcements (`/extra/...`), in tables the scraper never writes.
 
 The OpenAPI spec is meant to stand on its own (handed to a person or an agent without the
 code), so keep summaries, descriptions and `schemas.py` in step with behavior."""
@@ -15,7 +17,7 @@ import secrets
 import shlex
 import sqlite3
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Iterator, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, Response
@@ -25,12 +27,16 @@ from starlette.background import BackgroundTask
 
 from .. import config, storage
 from ..models import GPA_PLACES, ItemKind
+from ..models import Item as ItemRecord
 from ..scraper import sources as _sources  # noqa: F401  (registers all sources)
 from ..scraper.base import REGISTRY, Source
+from ..scraper.dates import LOCAL_TZ
+from . import commands, drafts
 from .schemas import (
-    DESCRIPTION, DONE_STATUSES, TAGS, Browser, BrowserSettings, ClearedSyncRequests,
-    CountValue, Course, Error, GpaValue, Grade, Health, HistoryRecord, Item, Run, RunDetail, Schedule,
-    ScheduleSettings, SourceStatus, StatusValue, SyncRequest, errors,
+    DESCRIPTION, DONE_STATUSES, TAGS, Action, AssignmentEdit, Browser, BrowserSettings,
+    ClearedSyncRequests, CommandRequest, CommandResult, ConversionDraft, CountValue, Course,
+    DueSettings, Error, GpaValue, Grade, Health, HistoryRecord, Item, NewAssignment, NoteSettings,
+    Run, RunDetail, Schedule, ScheduleSettings, SourceStatus, StatusValue, SyncRequest, errors,
 )
 
 app = FastAPI(
@@ -446,8 +452,9 @@ def items(
                                                           "items with no due date."),
     posted_after: datetime | None = Query(None, description="Posted at or after this time "
                                                             "(ISO 8601; include an offset)."),
-    q: str | None = Query(None, description="Case-insensitive substring match on `title` or "
-                                            "`course_name` (not the description).",
+    q: str | None = Query(None, description="Case-insensitive substring match on `title`, "
+                                            "`course_name` or the student's note (not the "
+                                            "description).",
                           examples=["essay"]),
     include_inactive: bool = INCLUDE_INACTIVE,
     order: Literal["due", "posted", "seen"] = Query(
@@ -457,10 +464,12 @@ def items(
     offset: int = Query(0, description="Items to skip, for paging."),
     conn: sqlite3.Connection = Depends(db),
 ) -> list[Item]:
-    """Assignments, quizzes, questions, materials and announcements from every source. Filters
-    combine with AND; a repeated filter matches any of its values. For "what's due" and
-    "what's overdue", `GET /items/upcoming` and `GET /items/missing` are simpler."""
-    sql, args = "SELECT * FROM items WHERE 1=1", []
+    """Assignments, quizzes, questions, materials and announcements from every source, plus
+    assignments made in lifeapi. Filters combine with AND; a repeated filter matches any of its
+    values. Due-date filters and order use `due_at`, the student's deadline where they changed
+    it. For "what's due" and "what's overdue", `GET /items/upcoming` and `GET /items/missing`
+    are simpler."""
+    sql, args = "SELECT * FROM item_view WHERE 1=1", []
 
     def any_of(col: str, values: list[str]) -> None:
         nonlocal sql
@@ -486,8 +495,8 @@ def items(
         sql += " AND posted_at>=?"
         args.append(_iso(posted_after))
     if q:
-        sql += " AND (title LIKE ? OR course_name LIKE ?)"
-        args += [f"%{q}%"] * 2
+        sql += " AND (title LIKE ? OR course_name LIKE ? OR note LIKE ?)"
+        args += [f"%{q}%"] * 3
     if not include_inactive:
         sql += " AND active=1"
     sql += {
@@ -497,14 +506,14 @@ def items(
     }[order]
     sql += " LIMIT ? OFFSET ?"
     args += [limit, offset]
-    return [storage.row_to_dict(r) for r in conn.execute(sql, args)]
+    return [storage.item_to_dict(r) for r in conn.execute(sql, args)]
 
 
 def _due_sql(start: datetime, end: datetime, include_done: bool = False,
              what: str = "*") -> tuple[str, list[Any]]:
     """Active items due from `start` to `end` (inclusive), without finished ones unless
     `include_done`. `/items/upcoming` and the `next` value share it."""
-    sql = f"SELECT {what} FROM items WHERE active=1 AND due_at>=? AND due_at<=?"
+    sql = f"SELECT {what} FROM item_view WHERE active=1 AND due_at>=? AND due_at<=?"
     args: list[Any] = [_iso(start), _iso(end)]
     if not include_done:
         sql += f" AND (status IS NULL OR status NOT IN ({','.join('?' * len(DONE_STATUSES))}))"
@@ -516,7 +525,7 @@ def _missing_sql(what: str = "*", days: int | None = None) -> tuple[str, list[An
     """Overdue items not turned in, as `/items/missing` and the `missing` value count them;
     with `days`, only those due in the last `days` days."""
     now = datetime.now(timezone.utc)
-    sql = f"""SELECT {what} FROM items WHERE active=1 AND due_at<? AND
+    sql = f"""SELECT {what} FROM item_view WHERE active=1 AND due_at<? AND
               (status IN ('missing','assigned') OR status IS NULL) AND kind!='announcement'"""
     args: list[Any] = [_iso(now)]
     if days is not None:
@@ -534,10 +543,11 @@ def upcoming(
     conn: sqlite3.Connection = Depends(db),
 ) -> list[Item]:
     """Items due between now and `days` from now, soonest first. By default leaves out work
-    already finished, so this is the to-do list."""
+    already finished, so this is the to-do list. Deadlines the student changed count as
+    changed, and assignments they made from announcements are included."""
     now = datetime.now(timezone.utc)
     sql, args = _due_sql(now, now + timedelta(days=days), include_done)
-    return [storage.row_to_dict(r) for r in conn.execute(sql + " ORDER BY due_at", args)]
+    return [storage.item_to_dict(r) for r in conn.execute(sql + " ORDER BY due_at", args)]
 
 
 @app.get("/items/missing", dependencies=[Auth], tags=["items"], operation_id="listMissingItems",
@@ -545,9 +555,10 @@ def upcoming(
 def missing(conn: sqlite3.Connection = Depends(db)) -> list[Item]:
     """Items past their deadline whose status is `missing`, `assigned` or empty (so not
     turned in on the source), most recently due first. Announcements are excluded. Some
-    platforms keep old work listed long after it stops mattering, so expect a long tail."""
+    platforms keep old work listed long after it stops mattering, so expect a long tail. An
+    item whose deadline the student moved later isn't overdue until the new one."""
     sql, args = _missing_sql()
-    return [storage.row_to_dict(r) for r in conn.execute(sql + " ORDER BY due_at DESC", args)]
+    return [storage.item_to_dict(r) for r in conn.execute(sql + " ORDER BY due_at DESC", args)]
 
 
 @app.get("/announcements", dependencies=[Auth], tags=["items"], operation_id="listAnnouncements",
@@ -560,26 +571,89 @@ def announcements(
     """Items of kind `announcement` posted in the last `days` days, newest first. Only Google
     Classroom has announcements today."""
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    sql, args = "SELECT * FROM items WHERE active=1 AND kind='announcement' AND posted_at>=?", [_iso(since)]
+    sql, args = "SELECT * FROM item_view WHERE active=1 AND kind='announcement' AND posted_at>=?", [_iso(since)]
     if source:
         sql += " AND source=?"
         args.append(source)
     sql += " ORDER BY posted_at DESC"
-    return [storage.row_to_dict(r) for r in conn.execute(sql, args)]
+    return [storage.item_to_dict(r) for r in conn.execute(sql, args)]
+
+
+ITEM_SOURCE = Path(description=f"The item's `source`: {SOURCE_NAMES}.")
+ITEM_ID = Path(description="The item's `id`.")
+
+
+def _item_row(conn: sqlite3.Connection, source: str, item_id: str) -> sqlite3.Row:
+    row = storage.get_item(conn, source, item_id)
+    if not row:
+        raise HTTPException(404, "Item not found")
+    return row
 
 
 @app.get("/items/{source}/{item_id}", dependencies=[Auth], tags=["items"], operation_id="getItem",
          summary="Get one item", responses=errors(401, 404, 503))
-def item(
-    source: str = Path(description=f"The item's `source`: {SOURCE_NAMES}."),
-    item_id: str = Path(description="The item's `id`."),
-    conn: sqlite3.Connection = Depends(db),
-) -> Item:
+def item(source: str = ITEM_SOURCE, item_id: str = ITEM_ID,
+         conn: sqlite3.Connection = Depends(db)) -> Item:
     """One item by `(source, id)`, including inactive ones."""
-    row = conn.execute("SELECT * FROM items WHERE source=? AND id=?", (source, item_id)).fetchone()
-    if not row:
-        raise HTTPException(404, "Item not found")
-    return storage.row_to_dict(row)
+    return storage.item_to_dict(_item_row(conn, source, item_id))
+
+
+# Notes and deadlines write, so like /sync they open their own read-write connection. They're
+# kept apart from the scraped record (in item_marks), so a scrape never overwrites them.
+
+def _mark(source: str, item_id: str, **fields: str | None) -> dict[str, Any]:
+    with storage.connect() as conn:
+        _item_row(conn, source, item_id)
+        storage.set_mark(conn, source, item_id, **fields)
+        conn.commit()
+        return storage.item_to_dict(storage.get_item(conn, source, item_id))
+
+
+def _due_utc(value: datetime | date) -> str:
+    """A deadline from a request as stored: UTC. Naive is school-local, a bare date 23:59."""
+    if not isinstance(value, datetime):
+        value = datetime.combine(value, time(23, 59))
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=LOCAL_TZ)
+    return _iso(value)
+
+
+@app.put("/items/{source}/{item_id}/note", dependencies=[Auth], tags=["items"],
+         operation_id="setItemNote", summary="Set the student's note on an item",
+         responses=errors(401, 404))
+def set_note(settings: NoteSettings, source: str = ITEM_SOURCE, item_id: str = ITEM_ID) -> Item:
+    """Replaces the item's note (`user.note`) with `note`; a blank one deletes it. Notes stay
+    in lifeapi: the platform never sees them, and scrapes leave them alone. Returns the item."""
+    return _mark(source, item_id, note=settings.note.strip() or None)
+
+
+@app.delete("/items/{source}/{item_id}/note", dependencies=[Auth], tags=["items"],
+            operation_id="deleteItemNote", summary="Delete the student's note on an item",
+            responses=errors(401, 404))
+def delete_note(source: str = ITEM_SOURCE, item_id: str = ITEM_ID) -> Item:
+    """Returns the item."""
+    return _mark(source, item_id, note=None)
+
+
+@app.put("/items/{source}/{item_id}/due", dependencies=[Auth], tags=["items"],
+         operation_id="setItemDue", summary="Change an item's deadline",
+         responses=errors(401, 404))
+def set_due(settings: DueSettings, source: str = ITEM_SOURCE, item_id: str = ITEM_ID) -> Item:
+    """Sets the student's own deadline for the item (an extension, say, or an earlier personal
+    one). From then on it's the item's `due_at` everywhere, in lists, filters and counts, and
+    `source_due_at` keeps the platform's. If the platform's deadline changes later, `due_at`
+    stays the student's until `DELETE` restores the platform's. Returns the item."""
+    return _mark(source, item_id, due_at=_due_utc(settings.due_at))
+
+
+@app.delete("/items/{source}/{item_id}/due", dependencies=[Auth], tags=["items"],
+            operation_id="resetItemDue", summary="Restore an item's own deadline",
+            responses=errors(401, 404))
+def reset_due(source: str = ITEM_SOURCE, item_id: str = ITEM_ID) -> Item:
+    """Drops the student's deadline, so `due_at` is the platform's again (`source_due_at`).
+    An assignment made in lifeapi has no platform deadline, so it's then left without one.
+    Returns the item."""
+    return _mark(source, item_id, due_at=None)
 
 
 @app.get("/grades", dependencies=[Auth], tags=["grades"], operation_id="listGrades",
@@ -756,3 +830,320 @@ def _status(conn: sqlite3.Connection = Depends(db)) -> tuple[str, dict]:
         oldest = datetime.fromisoformat(min(updated[name] for name in enabled))
         minutes = int((datetime.now(timezone.utc) - oldest).total_seconds() // 60)
     return str(failing), {"minutes": minutes}
+
+
+# Turning announcements into assignments. Assignments made here are items like any other
+# (source and course of their announcement, id `lifeapi-<n>`), stored in custom_items; their
+# deadline and note are item_marks, set like any item's.
+
+EXTRA_ERRORS = errors(401, 404, 409)
+
+
+def _announcement(conn: sqlite3.Connection, source: str, item_id: str) -> sqlite3.Row:
+    row = _item_row(conn, source, item_id)
+    if row["kind"] != ItemKind.ANNOUNCEMENT.value:
+        raise HTTPException(409, f"That's {'an' if row['kind'][0] in 'aeiou' else 'a'} "
+                                 f"{row['kind']}; only announcements convert to assignments")
+    return row
+
+
+def _custom(conn: sqlite3.Connection, source: str, item_id: str) -> sqlite3.Row:
+    row = _item_row(conn, source, item_id)
+    if row["converted_from"] is None:
+        raise HTTPException(409, "That item comes from its platform, not lifeapi, so it can't be "
+                                 "edited here (its note and deadline can: /items/{source}/{item_id}/note, /due)")
+    return row
+
+
+@app.get("/extra/drafts/{source}/{item_id}", dependencies=[Auth], tags=["extra"],
+         operation_id="draftAssignment", summary="Suggest assignments from an announcement",
+         responses={**EXTRA_ERRORS, **errors(503)})
+def draft_assignment(source: str = ITEM_SOURCE,
+                     item_id: str = Path(description="The announcement's `id`."),
+                     conn: sqlite3.Connection = Depends(db)) -> ConversionDraft:
+    """Reads the announcement and suggests the assignments it asks for: a title, kind, deadline
+    and description for each, every date it mentions, and existing items it may be about. Fill
+    a form with them for the student to check, then `POST /extra/assignments`. Dates count from
+    when the announcement was posted, and a date written without a time gets the time the
+    course's deadlines are usually set at. Nothing is saved."""
+    ann = storage.item_to_dict(_announcement(conn, source, item_id))
+    course = [storage.item_to_dict(r) for r in conn.execute(
+        "SELECT * FROM item_view WHERE source=? AND course_id IS ? AND active=1 AND id!=?",
+        (source, ann["course_id"], item_id))]
+    converted = [i["id"] for i in course if i["converted_from"] == item_id]
+    out = drafts.draft(ann, [i for i in course if i["converted_from"] != item_id])
+    return {"source": source, "id": item_id, **out, "converted": converted}
+
+
+@app.post("/extra/assignments", dependencies=[Auth], tags=["extra"], status_code=201,
+          operation_id="createAssignment", summary="Make an assignment from an announcement",
+          responses=EXTRA_ERRORS)
+def create_assignment(body: NewAssignment) -> Item:
+    """Makes an assignment from an announcement. It joins the announcement's course and source
+    with an id starting `lifeapi-`, links to the announcement (`url`, `converted_from`), keeps its
+    attachments, and from then on appears in `/items`, `/items/upcoming` and `/items/missing`
+    like scraped work. Its `status` starts `assigned`; set it to `done` with `PATCH
+    /extra/assignments/{source}/{item_id}`. Returns the new item."""
+    with storage.connect() as conn:
+        ann = storage.item_to_dict(_announcement(conn, body.source, body.announcement_id))
+        record = ItemRecord(
+            source=body.source, id="", kind=body.kind, title=body.title.strip(), url=ann["url"],
+            course_id=ann["course_id"], course_name=ann["course_name"],
+            description=(body.description or "").strip() or None, author=ann["author"],
+            posted_at=ann["posted_at"], status="assigned", points_possible=body.points_possible,
+            attachments=ann["attachments"],
+        )
+        new_id = storage.create_custom_item(conn, record, body.announcement_id)
+        note = (body.note or "").strip() or None
+        if body.due_at is not None or note:
+            storage.set_mark(conn, body.source, new_id, note=note,
+                             due_at=None if body.due_at is None else _due_utc(body.due_at))
+        conn.commit()
+        return storage.item_to_dict(storage.get_item(conn, body.source, new_id))
+
+
+@app.get("/extra/assignments", dependencies=[Auth], tags=["extra"],
+         operation_id="listAssignments", summary="List assignments made from announcements",
+         responses=READ_ERRORS)
+def assignments(
+    source: str | None = _source_param(),
+    announcement_id: str | None = Query(None, description="Only those made from this "
+                                                          "announcement (pair with `source`)."),
+    conn: sqlite3.Connection = Depends(db),
+) -> list[Item]:
+    """Every assignment made in lifeapi, newest first. They're in `GET /items` too; this lists
+    just them."""
+    sql, args = "SELECT * FROM item_view WHERE converted_from IS NOT NULL", []
+    if source:
+        sql += " AND source=?"
+        args.append(source)
+    if announcement_id:
+        sql += " AND converted_from=?"
+        args.append(announcement_id)
+    return [storage.item_to_dict(r) for r in conn.execute(sql + " ORDER BY first_seen_at DESC", args)]
+
+
+@app.patch("/extra/assignments/{source}/{item_id}", dependencies=[Auth], tags=["extra"],
+           operation_id="editAssignment", summary="Edit or finish an assignment made from an announcement",
+           responses=EXTRA_ERRORS)
+def edit_assignment(edit: AssignmentEdit, source: str = ITEM_SOURCE,
+                    item_id: str = ITEM_ID) -> Item:
+    """Changes the fields given, e.g. `{"status": "done"}` once it's handed in. Returns the
+    item."""
+    with storage.connect() as conn:
+        record = ItemRecord.model_validate_json(_custom(conn, source, item_id)["data"])
+        for name in edit.model_fields_set:
+            value = getattr(edit, name)
+            if name in ("title", "kind", "status") and value is None:
+                continue  # these can't be cleared
+            if isinstance(value, str):
+                value = value.strip() or None
+            setattr(record, name, ItemKind(value) if name == "kind" else value)
+        storage.save_custom_item(conn, record)
+        conn.commit()
+        return storage.item_to_dict(storage.get_item(conn, source, item_id))
+
+
+@app.delete("/extra/assignments/{source}/{item_id}", dependencies=[Auth], tags=["extra"],
+            status_code=204, operation_id="deleteAssignment",
+            summary="Delete an assignment made from an announcement", responses=EXTRA_ERRORS)
+def delete_assignment(source: str = ITEM_SOURCE, item_id: str = ITEM_ID) -> Response:
+    """Deletes it for good, with its note and deadline. The announcement stays."""
+    with storage.connect() as conn:
+        _custom(conn, source, item_id)
+        storage.delete_custom_item(conn, source, item_id)
+        conn.commit()
+    return Response(status_code=204)
+
+
+# Commands in words. Each applied command is an `actions` row holding the values it replaced,
+# so any of them can be undone later; an undo is an action too, so it can be undone (redo).
+
+def _changes(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, Any]]:
+    shown = lambda name, value: storage.local_iso(value) if name == "due_at" else value
+    return [{"field": k, "before": shown(k, before.get(k)), "after": shown(k, v)} for k, v in after.items()]
+
+
+def _unsaved(item: dict[str, Any], command: str, summary: str, notes: list[str],
+             changes: list[dict[str, Any]], undo_of: int | None = None,
+             kind: str = "command") -> dict[str, Any]:
+    """A command result that changed nothing: a dry run, or the item already was that way."""
+    return {"action_id": None, "kind": kind, "source": item["source"], "item_id": item["id"],
+            "title": item["title"], "command": command, "summary": summary, "notes": notes,
+            "changes": changes, "undo_of": undo_of, "undone_by": None, "created_at": None,
+            "item": item}
+
+
+# An action with its kind: an undo of an undo is a redo.
+ACTIONS_SQL = """SELECT a.*, CASE WHEN a.undo_of IS NULL THEN 'command'
+                    WHEN (SELECT b.undo_of FROM actions b WHERE b.action_id = a.undo_of) IS NULL THEN 'undo'
+                    ELSE 'redo' END AS kind FROM actions a"""
+
+
+def _action(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "action_id": row["action_id"], "kind": row["kind"], "source": row["source"], "item_id": row["id"],
+        "title": row["title"], "command": row["command"], "summary": row["summary"],
+        "notes": json.loads(row["notes"]),
+        "changes": _changes(json.loads(row["before"]), json.loads(row["after"])),
+        "undo_of": row["undo_of"], "undone_by": row["undone_by"], "created_at": row["created_at"],
+    }
+
+
+def _action_row(conn: sqlite3.Connection, action_id: int) -> sqlite3.Row:
+    row = conn.execute(f"{ACTIONS_SQL} WHERE a.action_id=?", (action_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "No command with that id")
+    return row
+
+
+def _command_result(conn: sqlite3.Connection, action_id: int) -> dict[str, Any]:
+    out = _action(_action_row(conn, action_id))
+    row = storage.get_item(conn, out["source"], out["item_id"])
+    return {**out, "item": row and storage.item_to_dict(row)}
+
+
+def _undo(conn: sqlite3.Connection, target: sqlite3.Row, command: str,
+          dry_run: bool) -> dict[str, Any]:
+    """Undo `target`: put back the values it replaced, logged as a new action."""
+    if target["undone_by"]:
+        raise HTTPException(409, f"That was already undone (command {target['undone_by']}).")
+    source, item_id = target["source"], target["id"]
+    item = storage.item_to_dict(_item_row(conn, source, item_id))
+    restore, expected = json.loads(target["before"]), json.loads(target["after"])
+    redo = target["undo_of"] is not None
+    said = _action_row(conn, target["undo_of"])["command"] if redo else target["command"]
+    if redo and command == "undo":  # the undo endpoint on an undo
+        command = "redo"
+    verb = "Redid" if redo else "Undid"
+    current = storage.item_fields(conn, source, item_id, restore)
+    if dry_run:
+        return _unsaved(item, command, f"Would {'redo' if redo else 'undo'} {commands.quote(said)}.",
+                        [], _changes(current, restore), undo_of=target["action_id"],
+                        kind="redo" if redo else "undo")
+    storage.apply_fields(conn, source, item_id, restore)
+    after = storage.item_to_dict(storage.get_item(conn, source, item_id))
+    now = datetime.now(LOCAL_TZ)
+    parts = []
+    if "due_at" in restore:
+        due = commands.when_text(commands.local(after["due_at"]), now)
+        parts.append(f"due date back to {commands.source_name(source)}'s, {due}"
+                     if restore["due_at"] is None and after["converted_from"] is None else f"due {due}")
+    if "note" in restore:
+        parts.append(f"note back to {commands.quote(restore['note'])}" if restore["note"] else "note removed")
+    if "status" in restore:
+        parts.append("marked done" if restore["status"] == "done" else "marked not done")
+    notes = ["It had been changed since, so that later change is replaced too."] if current != expected else []
+    action_id = storage.record_action(
+        conn, source, item_id, item["title"], command,
+        f"{verb} {commands.quote(said)}: {', '.join(parts)}.", notes, current, restore,
+        undo_of=target["action_id"])
+    conn.commit()
+    return _command_result(conn, action_id)
+
+
+@app.post("/extra/commands", dependencies=[Auth], tags=["extra"], operation_id="runCommand",
+          summary="Change an item with a command in words",
+          responses={**errors(401, 404, 409), 400: {"model": Error, "description":
+                     "The command wasn't understood (`detail` says what can be said), or no item "
+                     "was named."}})
+def run_command(body: CommandRequest) -> CommandResult:
+    """Runs a command such as `set the due date to today at 11:59 PM`, `due at 11:59`, `due oct
+    8 3 o'clock`, `push it back a day`, `note: bring a calculator` or `undo` on one item, and
+    says what it did. It's forgiving: what isn't said is kept from the item (a time alone keeps
+    the date, a date alone the time), a time without am/pm is read as a student would mean it,
+    and typos and spoken numbers are fine. `summary` and `notes` are written to show the person,
+    including how anything ambiguous was read. Every command can be undone, however old: `undo`
+    as a command undoes this item's latest, and `POST /extra/commands/{action_id}/undo` any one.
+    A command that changes nothing (it's already so) returns `action_id: null`. 400 when it
+    isn't understood, with what can be said; 409 when it can't apply (marking a scraped item
+    done: its platform decides that; moving a deadline it doesn't have)."""
+    command, url = body.command, body.url
+    if url and "##" in url:
+        url, _, spoken = url.partition("##")
+        command = command or spoken
+    if not command or not command.strip():
+        raise HTTPException(400, f"Say what to do, like {commands.EXAMPLES}.")
+    with storage.connect() as conn:
+        if url:
+            found = storage.find_item_by_url(conn, url)
+            if not found:
+                raise HTTPException(404, "No item has that link. It may not have been scraped yet.")
+            source, item_id = found
+        elif body.source and body.item_id:
+            source, item_id = body.source, body.item_id
+        else:
+            raise HTTPException(400, "Name the item: `source` and `item_id`, or `url`")
+        item = storage.item_to_dict(_item_row(conn, source, item_id))
+        usual = None
+        if item["due_at"] is None:  # a date said without a time then gets the course's usual time
+            usual = drafts.usual_time([storage.item_to_dict(r) for r in conn.execute(
+                "SELECT * FROM item_view WHERE source=? AND course_id IS ? AND active=1",
+                (source, item["course_id"]))])
+        now = datetime.now(LOCAL_TZ)
+        try:
+            plan = commands.interpret(command, item, now, usual)
+        except commands.CommandError as e:
+            raise HTTPException(e.status, e.message)
+        if plan in (commands.UNDO, commands.REDO):
+            undo = plan == commands.UNDO
+            target = conn.execute(
+                f"{ACTIONS_SQL} WHERE a.source=? AND a.id=? AND a.undone_by IS NULL AND a.undo_of IS "
+                f"{'NULL' if undo else 'NOT NULL'} ORDER BY a.action_id DESC LIMIT 1", (source, item_id)
+            ).fetchone()
+            if not target:
+                raise HTTPException(409, f"There's nothing to {'undo' if undo else 'redo'} on this item.")
+            return _undo(conn, target, command.strip(), body.dry_run)
+        before = storage.item_fields(conn, source, item_id, plan.changes)
+        if not plan.changes or body.dry_run:
+            summary = f"Would do this: {plan.summary}" if plan.changes else plan.summary
+            return _unsaved(item, command.strip(), summary, plan.notes, _changes(before, plan.changes))
+        storage.apply_fields(conn, source, item_id, plan.changes)
+        action_id = storage.record_action(conn, source, item_id, item["title"], command.strip(),
+                                          plan.summary, plan.notes, before, plan.changes)
+        conn.commit()
+        return _command_result(conn, action_id)
+
+
+@app.get("/extra/commands", dependencies=[Auth], tags=["extra"], operation_id="listCommands",
+         summary="List commands that ran", responses=READ_ERRORS)
+def list_commands(
+    source: str | None = _source_param(),
+    item_id: str | None = Query(None, description="Only those on this item (pair with `source`)."),
+    limit: int = Query(50, ge=1, le=500, description="How many to return."),
+    conn: sqlite3.Connection = Depends(db),
+) -> list[Action]:
+    """Commands that changed something, newest first, undos included. Any without `undone_by`
+    can still be undone."""
+    sql, args = f"{ACTIONS_SQL} WHERE 1=1", []
+    if source:
+        sql += " AND a.source=?"
+        args.append(source)
+    if item_id:
+        sql += " AND a.id=?"
+        args.append(item_id)
+    sql += " ORDER BY a.action_id DESC LIMIT ?"
+    args.append(limit)
+    return [_action(r) for r in conn.execute(sql, args)]
+
+
+COMMAND_ID = Path(description="`action_id` of a command.")
+
+
+@app.get("/extra/commands/{action_id}", dependencies=[Auth], tags=["extra"],
+         operation_id="getCommand", summary="Get one command and its item now",
+         responses=errors(401, 404, 503))
+def get_command(action_id: int = COMMAND_ID, conn: sqlite3.Connection = Depends(db)) -> CommandResult:
+    return _command_result(conn, action_id)
+
+
+@app.post("/extra/commands/{action_id}/undo", dependencies=[Auth], tags=["extra"],
+          operation_id="undoCommand", summary="Undo a command", responses=errors(401, 404, 409))
+def undo_command(action_id: int = COMMAND_ID,
+                 dry_run: bool = Query(False, description="Say what it would do without doing it.")
+                 ) -> CommandResult:
+    """Puts back what the command replaced, however long ago it ran, and returns the undo (an
+    action itself, so undoing it redoes the command). If the same fields changed since, those
+    later changes are replaced too, and `notes` says so. 409 if it was already undone."""
+    with storage.connect() as conn:
+        return _undo(conn, _action_row(conn, action_id), "undo", dry_run)

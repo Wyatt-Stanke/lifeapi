@@ -1,7 +1,7 @@
 """Dev server for the explorer frontend: `python frontend/serve.py [--port 8080] [--api http://127.0.0.1:8000]
 [--host-page gpa.example.com=/biggpa ...]`.
 
-Proxies /api/* (GET, POST, PUT and DELETE) to the API, so the page can call it same-origin without the
+Proxies /api/* (GET, POST, PUT, PATCH and DELETE) to the API, so the page can call it same-origin without the
 API needing CORS, serves the standalone pages in PAGES (e.g. /biggpa), and serves index.html for every
 other path (so `/<source URL>` links reach the page's link resolver). `--host-page` serves a standalone
 page at / for requests to that Host, so one server can back a second domain. Stdlib only.
@@ -28,6 +28,9 @@ def make_handler(api: str, host_pages: dict[str, str]) -> type[BaseHTTPRequestHa
 
         def do_PUT(self) -> None:
             self._proxy_write("PUT")
+
+        def do_PATCH(self) -> None:
+            self._proxy_write("PATCH")
 
         def do_DELETE(self) -> None:
             self._proxy_write("DELETE")

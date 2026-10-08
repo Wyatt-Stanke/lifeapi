@@ -11,7 +11,9 @@ separate schedules. They share only `lifeapi/models.py` (pydantic models) and
 scraper with `--due` every minute, and it fetches the sources that are due on their
 schedules (see "Schedules" below). The API stays up. Its only writes are queueing manual
 sync requests (`POST /sync`) and setting schedules and browser settings, all of which the
-scraper picks up.
+scraper picks up, and the student's own additions (notes, changed deadlines, assignments
+made from announcements, commands; see "The student's additions"), which the scraper never
+touches.
 
 ## Commands
 
@@ -167,7 +169,8 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
 ### Storage and API
 
 - `storage.py`: tables `courses`, `items`, `grades` and `scrape_runs`, plus `sync_requests`,
-  `schedules`, `browser_settings` and `history`. Each record row stores the full model JSON in `data`, plus a few indexed
+  `schedules`, `browser_settings`, `history`, and the API-written `item_marks` and
+  `custom_items` and `actions` (see "The student's additions"). Each record row stores the full model JSON in `data`, plus a few indexed
   columns used by API filters. `save_result` upserts and then, for a full run, marks rows
   not seen in that run `active=0` (soft delete). `datetime`s are stored as UTC ISO strings
   in the indexed columns. New columns go in both `SCHEMA` and `_migrate`.
@@ -187,8 +190,9 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   `-wal`/`-shm` files after the scraper exits. They also use `check_same_thread=False`,
   because FastAPI opens the per-request connection (the `db()` dependency) and uses it on
   different threadpool threads.
-- `api/app.py`: FastAPI, read-only apart from `/sync`, `/sources/{source}/schedule` and
-  `/sources/{source}/browser`. The
+- `api/app.py`: FastAPI, read-only apart from `/sync`, `/sources/{source}/schedule`,
+  `/sources/{source}/browser`, `/items/{source}/{item_id}/note` and `/due`,
+  `/extra/assignments` and `/extra/commands`. The
   optional `LIFEAPI_API_TOKEN` auth (bearer header or `?token=` query param) applies to
   everything except `/health` and the single-value endpoints `/min/<name>` (plain-text number)
   and `/json/<name>` (`{"value": …}`), for `gpa`, `missing`, `next` and `status`.
@@ -206,6 +210,80 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   stored row that no longer fits its model becomes a 500. When you add a source, status,
   `extra` key or endpoint, update those docs. `DONE_STATUSES` there is the finished-status
   list that `/items/upcoming` uses.
+
+### The student's additions
+
+The API writes these, in tables the scraper never reads or writes, so a scrape (including
+`save_result`'s soft delete) can't overwrite them:
+
+- `item_marks` (`source`, `id`, `note`, `due_at` UTC): a note and/or the student's own
+  deadline on any item, scraped or custom. `storage.set_mark` deletes a row once both are
+  null.
+- `custom_items`: assignments made from an announcement (`POST /extra/assignments`), in the
+  announcement's source and course (`from_id`), served with id `lifeapi-<custom_id>`
+  (`storage.CUSTOM_PREFIX`). `data` is the Item JSON with `due_at` null: their deadline is an
+  `item_marks` row like any changed deadline, so one code path handles both. `status` is
+  `assigned` or `done`. Deleting one deletes its marks.
+- `item_view` (a SQL view) is what the API serves items from: `items` UNION ALL
+  `custom_items`, LEFT JOIN `item_marks`. Its `due_at` is the effective deadline
+  (`COALESCE(mark, source's)`), so every filter, sort and count (`_due_sql`, `_missing_sql`,
+  `/items`) uses the student's deadline without special cases, and `source_due_at` is the
+  source's. API item queries must use `item_view`, never `items`, and `storage.item_to_dict`
+  to build the response (it adds `source_due_at`, `converted_from` and `user`). `_migrate`
+  recreates the view whenever `ITEM_VIEW`'s text changes, so edit it there. The scraper's
+  `_previous_items` reads `items` directly, so its cache never sees marks.
+
+- `actions`: every command that changed something (`POST /extra/commands`), with `before`
+  and `after` JSON of the fields it touched (`due_at` as item_marks stores it, so null means
+  the source's; `note`; `status`). Undoing applies `before` and is logged as an action with
+  `undo_of`; `storage.record_action` keeps `undone_by` meaning "not in effect" down a
+  redo chain (undoing an undo clears its target's `undone_by`). Any action can be undone
+  however old; if its fields changed since, the later change is overwritten and the undo's
+  `notes` say so. `kind` (`command`, `undo`, `redo`) is computed in the API's `ACTIONS_SQL`.
+
+`api/when.py` is the temporal tagger both of the next two use: regexes for date parts and
+time parts, resolved against a reference time, joined when adjacent (`_JOIN_RE`), as `Spec`s
+that keep what wasn't said as None. `find_dates` resolves them for posts (against
+`posted_at`, a missing time from the course's habit). `parse(command=True)`, after
+`normalize()`, is the forgiving mode for commands: lowercase "wed"/"may" are dates, "10-9"
+is a date, bare "at 5" and "11:59" count, with `ampm=False` so the caller picks the half of
+the day; `normalize` fixes misspelt weekdays and months (difflib, cutoff 0.8) and spoken
+numbers ("eleven fifty nine pm"). It's rules on purpose: on posts and commands it beat
+dateparser (13/32), parsedatetime (18/32), ctparse (18/32) and Microsoft Recognizers-Text
+(25/32, and its Python port no longer installs cleanly) against 31/32, because they read
+ordinary words and numbers as dates ("sat", "may", "now", "in a second", "1-5", "2.1").
+For titles, a spaCy dependency parse scored 9/20 against the rules' 20/20 on teacher
+shorthand ("HW: p. 45 #1-10 due tomorrow"), for ~250 MB of dependencies. Don't swap
+either in without re-running such a comparison.
+
+`api/drafts.py` makes `GET /extra/drafts/{source}/{item_id}`: suggestions for the
+"convert to assignment" form, from the announcement's text and the rest of its course. It's
+deliberately rule-based (no model, no dependency, ~2 ms a post), so it's deterministic and
+each suggestion carries its evidence (the date's text and offsets, where its time came from,
+the sentence). The pipeline: `when.find_dates` -> `clauses` (sentences, split between dated clauses) -> `_deadline_score` and
+`_task_score` (cue words around each date and in each sentence) -> `_title` (cuts the
+deadline and its cue words, keeps the subject or the imperative, trims reminder phrasing).
+Course data fills the gaps: `usual_time` (the modal due time of the course's scraped
+deadlines, per kind when there are enough), `_templates` (numbered names used twice or more,
+for casing and an alternative title), and `related` (IDF-weighted share of each item's title
+found in the post; needs two shared words or a whole numbered title, and penalises a
+different number, so "Lab 4" doesn't match a post about lab 5). To change its behaviour, run
+it on sample posts (`draft({"description": …, "posted_at": …}, course_items)`) and compare
+the drafts before and after; it has many interacting heuristics.
+
+`api/commands.py` interprets `POST /extra/commands`: `interpret(command, item, now, usual)`
+returns a `Plan` (field changes, a `summary` sentence for the person, `notes` on how anything
+ambiguous was read) or UNDO/REDO, which the API resolves to the item's latest action in
+effect (undo) or latest undo in effect (redo). Matching order matters: undo/redo, note
+commands (before dates, so a note's text is never read as one), done/not done (custom items
+only; 409 for scraped ones), reset/remove the due date, shifts by an amount ("push it back a
+day"; "in 3 days" is a date, not a shift), then a date/time. What isn't said is kept from the
+item: a time alone keeps its date, a date alone its time. A time without am/pm (`_pick_half`):
+1-6 and :59 are PM, 12 is noon, 7-11 whichever is nearer the item's current due time. A
+command that changes nothing returns `action_id: null` and logs nothing. The API also takes a
+`url` instead of `source`/`item_id` (`storage.find_item_by_url`: explorer links, Classroom ids
+in the path, else stored `url`s matched like the explorer's resolver), so a phone shortcut
+can post a copied link and a dictated command.
 
 ### Finishing a sign-in by hand
 
@@ -310,10 +388,12 @@ restores the default. The explorer edits it in the Sync status page's Browser co
 
 A temporary, deliberately unstyled explorer: plain semantic HTML, no CSS, no build step.
 It's a user-facing wrapper (Today, Upcoming, Missing, Announcements, Courses, Grades,
-Search, Sync status with sync buttons and schedule and browser editors), not an endpoint browser. Raw
+Search, Sync status with sync buttons and schedule and browser editors; item pages with a
+note box and deadline editor; "Convert to assignment" on announcements, a form filled from
+`/extra/drafts`), not an endpoint browser. Raw
 API access stays at `/api/docs`.
 
-- `serve.py` is stdlib only. It proxies `/api/*` (GET, POST, PUT, DELETE; each method needs its
+- `serve.py` is stdlib only. It proxies `/api/*` (GET, POST, PUT, PATCH, DELETE; each method needs its
   own `do_<METHOD>`, or `BaseHTTPRequestHandler` answers 501) to the API, so the API needs no CORS.
   It sends `X-Forwarded-Prefix: /api`, which the API's `forwarded_prefix` middleware turns
   into the request's `root_path`. That way `/api/docs` loads `/api/openapi.json`, and the
@@ -339,6 +419,13 @@ API access stays at `/api/docs`.
 - Display helpers live in one place: `SOURCE_NAMES` (add new sources there), `label()`
   for statuses, `relative()`/`when()` for dates, and `DONE`, which mirrors the API's
   finished statuses.
+- **Commands**: `<site>/<item link>##<command>` (or a single `#` when the command has a space
+  or is `undo`/`redo`/`done`/`reset`; `splitCommand`) is rewritten to `#/open?url=…&do=…`.
+  `viewOpen` resolves the link and goes to `#/item/…?do=…`; `route()` runs `?do=` through
+  `runPending` (POST /extra/commands) and replaces it in the address with `?did=<action>`
+  (or `?msg=`, `?cmd_error=`), so a reload or Back never runs it twice. `commandBanner` shows
+  `did`'s summary and notes with Undo/Redo above any view. Item pages have a command box
+  (it sets `?do=`) and the item's last commands, each with Undo.
 - **Link resolver**: `<site>/<any source URL>` (e.g.
   `localhost:8080/https://classroom.google.com/u/1/c/…/a/…/details`) is rewritten to
   `#/open?url=…`, which redirects to the matching page. Google Classroom URL segments are
@@ -354,6 +441,8 @@ API access stays at `/api/docs`.
 
 - `Item` is the shared shape for assignments, quizzes, questions, materials and
   announcements. `url` (the deep link back to the source) is the most important field.
+  Scrapers set `due_at` to the source's deadline; the API's `Item` (`api/schemas.py`)
+  reports the effective one as `due_at` and the source's as `source_due_at`.
 - Anything source-specific goes in `extra`. For Classroom, `extra.submitted_work` is the
   student's own attachments, `extra.links` are links from the description,
   `extra.list_signature`, `extra.detail_fetched_at` and (announcements) `extra.read_at`

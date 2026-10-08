@@ -65,7 +65,11 @@ async function api(path, params = {}, { method = "GET", json } = {}) {
   const body = await res.json().catch(() => null);
   // 422s list their problems.
   const detail = Array.isArray(body?.detail) ? body.detail.map((d) => d.msg).join("; ") : body?.detail;
-  if (!res.ok) throw new Error(`${res.status}: ${detail ?? res.statusText} (${url})`);
+  if (!res.ok) {
+    const e = new Error(`${res.status}: ${detail ?? res.statusText} (${url})`);
+    e.status = res.status; e.detail = detail; // the API's own explanation, for showing as is
+    throw e;
+  }
   return body;
 }
 
@@ -92,7 +96,8 @@ function relative(iso) {
   const days = Math.round((startOf(d) - startOf(now)) / 86400000);
   if (days === 0) {
     const mins = Math.round((d - now) / 60000);
-    if (Math.abs(mins) < 60) return mins >= 0 ? `in ${mins} min` : `${-mins} min ago`;
+    if (mins === 0) return "just now";
+    if (Math.abs(mins) < 60) return mins > 0 ? `in ${mins} min` : `${-mins} min ago`;
     return `today ${time(d)}`;
   }
   if (days === 1) return `tomorrow ${time(d)}`;
@@ -132,6 +137,9 @@ function itemLine(it, { showDue = true, showCourse = true } = {}) {
   if (it.kind !== "assignment") bits.push(label(it.kind));
   if (it.status) bits.push(DONE.has(it.status) ? `✓ ${label(it.status)}` : label(it.status));
   if (score(it)) bits.push(score(it));
+  if (it.converted_from) bits.push("from an announcement");
+  if (it.user?.due_at && it.source_due_at) bits.push(h("span", { title: `${sourceName(it.source)} says ${fullDate(it.source_due_at)}` }, "your deadline"));
+  if (it.user?.note) bits.push(h("span", { title: it.user.note }, "note"));
   const sep = bits.flatMap((b, i) => (i ? [" · ", b] : [b]));
   return h("li", {},
     showDue && it.due_at ? [when(it.due_at), " — "] : null,
@@ -158,11 +166,34 @@ function attachments(list) {
     a.type ? h("small", {}, ` (${a.type})`) : null)));
 }
 
+// <input type="datetime-local"> works in the browser's time zone, without one in the value.
+const pad = (n) => String(n).padStart(2, "0");
+function toLocalInput(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+const fromLocalInput = (v) => (v ? new Date(v).toISOString() : null);
+const itemPath = (it) => `/items/${encodeURIComponent(it.source)}/${encodeURIComponent(it.id)}`;
+const customPath = (it) => `/extra/assignments/${encodeURIComponent(it.source)}/${encodeURIComponent(it.id)}`;
+
+// Runs a write, alerting instead of throwing; resolves to the response, or undefined on failure.
+async function write(what, path, opts) {
+  try { return await api(path, {}, opts); }
+  catch (e) { alert(`Couldn't ${what}: ${e.message}`); }
+}
+
+// Assignments made from announcements, by announcement: "source/id" -> [items].
+async function convertedMap() {
+  const list = await api("/extra/assignments").catch(() => []);
+  return groupBy(list, (it) => `${it.source}/${it.converted_from}`);
+}
+
 // ---------- views ----------
 
 async function viewToday() {
-  const [upcoming, missing, ann] = await Promise.all([
-    api("/items/upcoming", { days: 7 }), api("/items/missing"), api("/announcements", { days: 3 }),
+  const [upcoming, missing, ann, converted] = await Promise.all([
+    api("/items/upcoming", { days: 7 }), api("/items/missing"), api("/announcements", { days: 3 }), convertedMap(),
   ]);
   const recentMissing = missing.filter((it) => new Date(it.due_at) > new Date(Date.now() - 14 * 86400000));
   return [
@@ -176,7 +207,7 @@ async function viewToday() {
     h("h2", {}, "Recently missed"),
     itemList(recentMissing),
     h("h2", {}, "Latest announcements"),
-    announcementList(ann.slice(0, 5)),
+    announcementList(ann.slice(0, 5), converted),
     ann.length > 5 ? h("p", {}, h("a", { href: "#/announcements" }, "More announcements →")) : null,
   ];
 }
@@ -226,25 +257,110 @@ function schoolYearStart() {
   return new Date(now.getMonth() >= 7 ? now.getFullYear() : now.getFullYear() - 1, 7, 1); // Aug 1
 }
 
-function announcementList(list) {
+// `converted` is convertedMap()'s: what was already made from each announcement.
+function announcementList(list, converted = new Map()) {
   if (!list.length) return h("p", {}, h("em", {}, "No announcements."));
-  return h("div", {}, list.map((a) => h("article", {},
-    h("p", {},
-      h("strong", {}, courseLink(a) || sourceName(a.source)), " — ", a.author || "", " · ", when(a.posted_at),
-      " · ", h("a", { href: itemHref(a) }, "details")),
-    a.description ? h("blockquote", {}, text(a.description)) : h("blockquote", {}, a.title),
-    attachments(a.attachments),
-    h("hr"))));
+  return h("div", {}, list.map((a) => {
+    const slot = h("div");
+    const made = converted.get(`${a.source}/${a.id}`) || [];
+    return h("article", {},
+      h("p", {},
+        h("strong", {}, courseLink(a) || sourceName(a.source)), " — ", a.author || "", " · ", when(a.posted_at),
+        " · ", h("a", { href: itemHref(a) }, "details"), " · ",
+        h("button", { onclick: () => openConvert(a, slot) }, "Convert to assignment")),
+      a.description ? h("blockquote", {}, text(a.description)) : h("blockquote", {}, a.title),
+      attachments(a.attachments),
+      made.length ? h("p", {}, "Made from this: ", made.flatMap((it, i) => [i ? ", " : "", h("a", { href: itemHref(it) }, it.title)])) : null,
+      slot,
+      h("hr"));
+  }));
+}
+
+// Opens convertForm() in `slot`, or closes it if it's open.
+async function openConvert(a, slot) {
+  if (slot.firstChild) { slot.replaceChildren(); return; }
+  slot.replaceChildren("Reading the announcement…");
+  try { slot.replaceChildren(await convertForm(a, () => slot.replaceChildren())); }
+  catch (e) { slot.replaceChildren(h("p", {}, h("strong", {}, "Couldn't draft it: "), e.message)); }
+}
+
+// The "convert to assignment" form, filled in from GET /extra/drafts. `close` hides it.
+async function convertForm(a, close) {
+  const d = await api(`/extra/drafts/${encodeURIComponent(a.source)}/${encodeURIComponent(a.id)}`);
+  const title = h("input", { size: 60, required: true, maxlength: 300 });
+  const kind = h("select", {}, ["assignment", "quiz"].map((k) => h("option", { value: k }, label(k))));
+  const due = h("input", { type: "datetime-local" });
+  const points = h("input", { type: "number", min: 0, step: "any", size: 6 });
+  const description = h("textarea", { rows: 6, cols: 70 });
+  const note = h("textarea", { rows: 2, cols: 70, placeholder: "Only you see this" });
+  const titlePicks = h("small"), source = h("small"), guess = h("small");
+
+  const timeNote = (m) => m?.time === "course" ? ` (no time given, so ${time(new Date(m.at))}, when this class's work is usually due)`
+    : m?.time === "default" ? " (no time given, so the end of the day)" : "";
+  function fill(i) {
+    const x = d.drafts[i];
+    title.value = x.title; kind.value = x.kind; due.value = toLocalInput(x.due_at);
+    points.value = x.points_possible ?? ""; description.value = x.description;
+    titlePicks.replaceChildren(...(x.titles.length ? ["Or: "] : []),
+      ...x.titles.flatMap((t, i) => [i ? " " : "", h("button", { type: "button", onclick: () => { title.value = t; } }, t)]));
+    source.replaceChildren(`From: “${x.sentence}”`);
+    guess.replaceChildren(x.due ? `Read “${x.due.text}” as ${fullDate(x.due.at)}${timeNote(x.due)}.` : "No date in the post.");
+  }
+
+  const pickDraft = d.drafts.length > 1 ? h("p", {}, `This post seems to ask for ${d.drafts.length} things: `,
+    h("select", { onchange: (e) => fill(Number(e.target.value)) },
+      d.drafts.map((x, i) => h("option", { value: i }, `${x.title}${x.due_at ? ` — ${relative(x.due_at)}` : ""}`)))) : null;
+  const datePicks = d.dates.length ? h("p", {}, h("small", {}, "Dates in the post: "),
+    d.dates.flatMap((m, i) => [i ? " " : "", h("button", { type: "button", title: fullDate(m.at), onclick: () => { due.value = toLocalInput(m.at); guess.replaceChildren(`Read “${m.text}” as ${fullDate(m.at)}${timeNote(m)}.`); } },
+      `${m.text} → ${relative(m.at)}`)])) : null;
+
+  // Moving an existing item's deadline instead of making a duplicate.
+  const related = d.related.length ? h("div", {},
+    h("p", {}, h("strong", {}, d.moves_deadline ? "This post seems to move a deadline. Is it one of these?" : "Already listed? This post may be about:")),
+    h("ul", {}, d.related.map((r) => {
+      const status = h("span");
+      return h("li", {}, h("a", { href: itemHref(r) }, r.title), r.due_at ? [" — due ", when(r.due_at)] : null, " ",
+        h("button", { type: "button", onclick: async () => {
+          if (!due.value) { alert("Pick a deadline first."); return; }
+          if (await write("change its deadline", itemPath(r) + "/due", { method: "PUT", json: { due_at: fromLocalInput(due.value) } })) {
+            status.replaceChildren(" ✓ moved to ", when(fromLocalInput(due.value)));
+          }
+        } }, "Move its deadline to the one below instead"), status);
+    }))) : null;
+
+  const form = h("form", { onsubmit: async (e) => {
+    e.preventDefault();
+    const it = await write("create the assignment", "/extra/assignments", { method: "POST", json: {
+      source: a.source, announcement_id: a.id, title: title.value, kind: kind.value,
+      due_at: fromLocalInput(due.value), description: description.value || null,
+      points_possible: points.value === "" ? null : Number(points.value), note: note.value || null,
+    } });
+    if (it) form.replaceWith(h("p", {}, "Created ", h("a", { href: itemHref(it) }, it.title),
+      it.due_at ? [", due ", when(it.due_at)] : null, ". ", h("button", { type: "button", onclick: close }, "Close")));
+  } },
+    h("fieldset", {},
+      h("legend", {}, "New assignment from this announcement"),
+      related, pickDraft,
+      h("p", {}, h("label", {}, "Title ", title), h("br"), titlePicks),
+      h("p", {}, source),
+      h("p", {}, h("label", {}, "Kind ", kind), " ", h("label", {}, "Points ", points)),
+      h("p", {}, h("label", {}, "Due ", due), " ", h("button", { type: "button", onclick: () => { due.value = ""; } }, "No deadline"), h("br"), guess),
+      datePicks,
+      h("p", {}, h("label", {}, "Description", h("br"), description)),
+      h("p", {}, h("label", {}, "Note", h("br"), note)),
+      h("p", {}, h("button", {}, "Create assignment"), " ", h("button", { type: "button", onclick: close }, "Cancel"))));
+  fill(0);
+  return form;
 }
 
 async function viewAnnouncements(params) {
   const days = Number(params.get("days") || 14);
-  const ann = await api("/announcements", { days });
+  const [ann, converted] = await Promise.all([api("/announcements", { days }), convertedMap()]);
   return [
     h("h1", {}, "Announcements"),
     h("p", {}, "Last ", h("select", { onchange: (e) => { location.hash = "#/announcements?days=" + e.target.value; } },
       [3, 7, 14, 30, 90, 365].map((d) => h("option", { value: d, selected: d === days }, `${d} days`))), ` — ${ann.length}`),
-    announcementList(ann),
+    announcementList(ann, converted),
   ];
 }
 
@@ -266,10 +382,11 @@ async function viewCourses(params) {
 }
 
 async function viewCourse(source, id, params) {
-  const [courses, items, grades] = await Promise.all([
+  const [courses, items, grades, converted] = await Promise.all([
     api("/courses", { source, include_inactive: true }),
     api("/items", { source, course_id: id, limit: 2000, order: "posted" }),
     api("/grades", { source }).catch(() => []),
+    convertedMap(),
   ]);
   const c = courses.find((x) => x.id === id) || { name: items[0]?.course_name || id };
   const now = new Date();
@@ -289,33 +406,105 @@ async function viewCourse(source, id, params) {
     h("h2", {}, `Upcoming (${upcoming.length})`), itemList(upcoming, { showCourse: false }),
     h("h2", {}, `Past & undated work (${past.length})`), itemList(past, { showCourse: false }),
     materials.length ? [h("h2", {}, `Materials (${materials.length})`), itemList(materials, { showCourse: false, showDue: false })] : null,
-    h("h2", {}, `Announcements (${ann.length})`), announcementList(ann),
+    h("h2", {}, `Announcements (${ann.length})`), announcementList(ann, converted),
   ];
 }
 
 async function viewItem(source, id) {
   const it = await api(`/items/${encodeURIComponent(source)}/${encodeURIComponent(id)}`);
+  const custom = it.converted_from != null;
+  const announcement = it.kind === "announcement";
+  const [made, actions] = await Promise.all([
+    announcement ? api("/extra/assignments", { source, announcement_id: id }).catch(() => []) : [],
+    api("/extra/commands", { source, item_id: id, limit: 10 }).catch(() => []),
+  ]);
+  const fromHref = custom && `#/item/${encodeURIComponent(it.source)}/${encodeURIComponent(it.converted_from)}`;
+  const theirs = it.user?.due_at && !custom
+    ? h("small", {}, h("br"), `${sourceName(it.source)} says `, it.source_due_at ? fullDate(it.source_due_at) : "none", ".")
+    : null;
   const facts = [
     ["Course", courseLink(it)],
-    ["From", `${sourceName(it.source)} · ${label(it.kind)}`],
+    ["From", custom ? ["You, from ", h("a", { href: fromHref }, `an announcement in ${sourceName(it.source)}`), ` · ${label(it.kind)}`]
+      : `${sourceName(it.source)} · ${label(it.kind)}`],
     ["Posted by", it.author],
     ["Posted", it.posted_at && [fullDate(it.posted_at), " (", relative(it.posted_at), ")"]],
-    ["Due", it.due_at ? [fullDate(it.due_at), " (", relative(it.due_at), ")"] : it.due_text],
+    ["Due", it.due_at ? [fullDate(it.due_at), " (", relative(it.due_at), ")", theirs] : it.due_text],
     ["Status", label(it.status)],
     ["Points", score(it)],
     ["Archived", it.active === false ? "Yes — no longer seen in the source" : null],
   ].filter(([, v]) => v && (!Array.isArray(v) || v.length));
+  const convertSlot = h("div");
   return [
     h("p", {}, h("a", { href: "javascript:history.back()" }, "← Back")),
     h("h1", {}, it.title),
-    it.url ? h("p", {}, h("a", { href: it.url, target: "_blank" }, `Open in ${sourceName(it.source)} ↗`)) : null,
+    it.url ? h("p", {}, h("a", { href: it.url, target: "_blank" }, `Open ${custom ? "the announcement" : ""} in ${sourceName(it.source)} ↗`)) : null,
     h("table", {}, facts.map(([k, v]) => h("tr", {}, h("th", { align: "left" }, k), h("td", {}, v)))),
+    custom ? customControls(it) : null,
+    announcement ? [
+      made.length ? h("p", {}, "Made from this: ", made.flatMap((x, i) => [i ? ", " : "", h("a", { href: itemHref(x) }, x.title)])) : null,
+      h("p", {}, h("button", { onclick: () => openConvert(it, convertSlot) }, "Convert to assignment")), convertSlot,
+    ] : null,
+    announcement ? null : dueForm(it),
+    noteForm(it),
+    commandSection(it, actions),
     it.description ? [h("h2", {}, "Description"), text(it.description)] : null,
     it.attachments?.length ? [h("h2", {}, "Attachments"), attachments(it.attachments)] : null,
     it.extra?.submitted_work?.length ? [h("h2", {}, "Your submitted work"), attachments(it.extra.submitted_work)] : null,
     it.comments?.length ? [h("h2", {}, "Comments"), h("ul", {}, it.comments.map((c) => h("li", {},
       h("strong", {}, c.author || "?"), c.private ? " (private)" : "", c.posted_at ? ` · ${c.posted_at}` : "", ": ", c.text)))] : null,
     h("details", {}, h("summary", {}, "All data"), h("pre", {}, JSON.stringify(it, null, 2))),
+  ];
+}
+
+// The student's own deadline for an item, kept in lifeapi only.
+function dueForm(it) {
+  const custom = it.converted_from != null;
+  const due = h("input", { type: "datetime-local", required: true, value: toLocalInput(it.due_at) });
+  const send = async (opts) => { if (await write("change the deadline", itemPath(it) + "/due", opts)) route(); };
+  return h("details", { open: !!it.user?.due_at && !custom },
+    h("summary", {}, custom ? "Change the deadline" : it.user?.due_at ? "Your deadline" : "Change the deadline"),
+    h("form", { onsubmit: (e) => { e.preventDefault(); send({ method: "PUT", json: { due_at: fromLocalInput(due.value) } }); } },
+      h("p", {}, h("label", {}, "Due ", due), " ", h("button", {}, "Save"), " ",
+        it.user?.due_at ? h("button", { type: "button", onclick: () => send({ method: "DELETE" }) },
+          custom ? "Remove the deadline" : `Go back to ${sourceName(it.source)}'s (${it.source_due_at ? fullDate(it.source_due_at) : "none"})`) : null)));
+}
+
+// The student's note on an item, kept in lifeapi only.
+function noteForm(it) {
+  const note = h("textarea", { rows: 4, cols: 70, maxlength: 10000, placeholder: "Only you see this" }, it.user?.note || "");
+  const send = async (opts) => { if (await write("save the note", itemPath(it) + "/note", opts)) route(); };
+  return [h("h2", {}, "Note"),
+    h("form", { onsubmit: (e) => { e.preventDefault(); send({ method: "PUT", json: { note: note.value } }); } },
+      note, h("p", {}, h("button", {}, "Save note"), " ",
+        it.user?.note ? h("button", { type: "button", onclick: () => send({ method: "DELETE" }) }, "Delete note") : null))];
+}
+
+// Done / edit / delete for an assignment made from an announcement.
+function customControls(it) {
+  const done = DONE.has(it.status);
+  const send = async (json) => { if (await write("update the assignment", customPath(it), { method: "PATCH", json })) route(); };
+  const title = h("input", { size: 60, required: true, maxlength: 300, value: it.title });
+  const kind = h("select", {}, ["assignment", "quiz"].map((k) => h("option", { value: k, selected: k === it.kind }, label(k))));
+  const points = h("input", { type: "number", min: 0, step: "any", size: 6, value: it.points_possible ?? "" });
+  const description = h("textarea", { rows: 6, cols: 70 }, it.description || "");
+  return [
+    h("p", {},
+      h("button", { onclick: () => send({ status: done ? "assigned" : "done" }) }, done ? "Mark not done" : "Mark done"), " ",
+      h("button", { onclick: async () => {
+        if (!confirm(`Delete “${it.title}”? The announcement stays.`)) return;
+        if (await write("delete the assignment", customPath(it), { method: "DELETE" }) !== undefined) {
+          location.hash = `#/item/${encodeURIComponent(it.source)}/${encodeURIComponent(it.converted_from)}`;
+        }
+      } }, "Delete")),
+    h("details", {}, h("summary", {}, "Edit"),
+      h("form", { onsubmit: (e) => { e.preventDefault(); send({
+        title: title.value, kind: kind.value, description: description.value || null,
+        points_possible: points.value === "" ? null : Number(points.value),
+      }); } },
+        h("p", {}, h("label", {}, "Title ", title)),
+        h("p", {}, h("label", {}, "Kind ", kind), " ", h("label", {}, "Points ", points)),
+        h("p", {}, h("label", {}, "Description", h("br"), description)),
+        h("p", {}, h("button", {}, "Save")))),
   ];
 }
 
@@ -559,6 +748,76 @@ async function viewStatus() {
     box];
 }
 
+// ---------- commands: <this site>/<item link>##<command>, or the box on an item page ----------
+
+// Splits "<link>##<command>" (or "<link>#<command>" when the command has a space or is one
+// word like "undo", since platform links don't end in such fragments) into [link, command].
+function splitCommand(raw) {
+  const decode = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
+  let i = raw.indexOf("##");
+  if (i >= 0) return [raw.slice(0, i), decode(raw.slice(i + 2)).trim()];
+  i = raw.indexOf("#");
+  if (i >= 0) {
+    const rest = decode(raw.slice(i + 1)).trim();
+    if (/\s/.test(rest) || /^(undo|redo|done|reset)$/i.test(rest)) return [raw.slice(0, i), rest];
+  }
+  return [raw, ""];
+}
+
+// Runs an item page's ?do=<command>, then swaps it in the address for ?did=<action> (or ?msg=,
+// or ?cmd_error=) so reloading or going back never runs it twice.
+async function runPending(path, params) {
+  const command = params.get("do");
+  params.delete("do");
+  const m = path.match(/^\/item\/([^/]+)\/([^/]+)$/);
+  try {
+    const r = await api("/extra/commands", {}, { method: "POST", json: {
+      source: decodeURIComponent(m[1]), item_id: decodeURIComponent(m[2]), command } });
+    if (r.action_id != null) params.set("did", r.action_id);
+    else params.set("msg", [r.summary, ...r.notes].join(" "));
+  } catch (e) {
+    params.set("cmd", command);
+    params.set("cmd_error", e.detail || e.message);
+  }
+  history.replaceState(null, "", "#" + path + "?" + params);
+}
+
+// Undoes a command (or redoes it, for an undo) and shows the result on its item's page.
+const undoButton = (a) => h("button", { onclick: async () => {
+  const r = await write(a.kind === "undo" ? "redo it" : "undo it", `/extra/commands/${a.action_id}/undo`, { method: "POST" });
+  if (r) location.hash = `#/item/${encodeURIComponent(r.source)}/${encodeURIComponent(r.item_id)}?did=${r.action_id}`;
+} }, a.kind === "undo" ? "Redo" : "Undo");
+
+// What the last command did (?did=), said (?msg=) or why it failed (?cmd_error=).
+async function commandBanner(params) {
+  if (params.get("did")) {
+    const a = await api(`/extra/commands/${encodeURIComponent(params.get("did"))}`).catch(() => null);
+    if (!a) return null;
+    return h("aside", { role: "status" }, h("p", {},
+      h("strong", {}, a.undone_by != null ? "Undone: " : "✓ "), a.summary, " ",
+      a.undone_by != null ? null : undoButton(a)),
+      a.notes.length ? h("p", {}, h("small", {}, a.notes.join(" "))) : null, h("hr"));
+  }
+  if (params.get("msg")) return h("aside", { role: "status" }, h("p", {}, params.get("msg")), h("hr"));
+  if (params.get("cmd_error")) {
+    return h("aside", { role: "alert" }, h("p", {}, h("strong", {}, `Couldn't do “${params.get("cmd")}”: `),
+      params.get("cmd_error")), h("hr"));
+  }
+  return null;
+}
+
+// The command box, the link form of it, and this item's past commands with Undo buttons.
+function commandSection(it, actions) {
+  const input = h("input", { size: 45, maxlength: 500, "aria-label": "Command",
+    placeholder: "due friday 5pm · push it back a day · note: … · undo" });
+  const here = `#/item/${encodeURIComponent(it.source)}/${encodeURIComponent(it.id)}`;
+  return [h("h2", {}, "Command"),
+    h("form", { onsubmit: (e) => { e.preventDefault(); if (input.value.trim()) location.hash = `${here}?do=${encodeURIComponent(input.value.trim())}`; } },
+      input, " ", h("button", {}, "Do it")),
+    actions.length ? h("ul", {}, actions.map((a) => h("li", {}, when(a.created_at), ` — “${a.command}”: `, a.summary,
+      a.undone_by != null ? h("em", {}, " (undone)") : [" ", undoButton(a)]))) : null];
+}
+
 // ---------- link resolver: <this site>/<any source URL> → the matching page ----------
 
 // Google Classroom URLs carry IDs as base64 of the numeric ID we store.
@@ -653,15 +912,23 @@ function linkForm(value = "") {
 }
 
 async function viewOpen(params) {
-  const raw = params.get("url") || "";
+  const [raw, inline] = splitCommand(params.get("url") || "");
+  const command = params.get("do") || inline;
   const u = parseLink(raw);
   if (u) {
     const target = await resolveLink(u);
-    if (target) { location.replace(target); return "Opening…"; }
+    if (target) {
+      const join = target.includes("?") ? "&" : "?";
+      if (!command) location.replace(target);
+      else if (target.startsWith("#/item/")) location.replace(`${target}${join}do=${encodeURIComponent(command)}`);
+      else location.replace(`${target}${join}cmd=${encodeURIComponent(command)}&cmd_error=${encodeURIComponent("that item hasn't been scraped yet, so nothing was changed.")}`);
+      return "Opening…";
+    }
   }
   return [
     h("h1", {}, "Link not found"),
     h("p", {}, u ? ["lifeapi has nothing matching ", h("a", { href: u.href, target: "_blank" }, u.href), ". It may not have been scraped yet."] : `"${raw}" isn't a URL.`),
+    command ? h("p", {}, `So “${command}” wasn't done.`) : null,
     h("p", {}, "Try another link:"), linkForm(raw),
   ];
 }
@@ -685,10 +952,11 @@ const routes = [
 
 let seq = 0;
 async function route() {
-  // <this site>/<source URL>: everything after the first "/" (query and fragment included) is the link.
+  // <this site>/<source URL>[##command]: everything after the first "/" (query and fragment
+  // included) is the link, up to the command.
   if (location.pathname !== "/" && location.pathname !== "/index.html") {
-    const link = location.href.slice(location.origin.length + 1);
-    history.replaceState(null, "", "/#/open?url=" + encodeURIComponent(link));
+    const [link, command] = splitCommand(location.href.slice(location.origin.length + 1));
+    history.replaceState(null, "", "/#/open?url=" + encodeURIComponent(link) + (command ? "&do=" + encodeURIComponent(command) : ""));
   }
   const [path, query] = (location.hash.slice(1) || "/").split("?");
   const params = new URLSearchParams(query || "");
@@ -700,8 +968,9 @@ async function route() {
     if (!m) continue;
     try {
       const args = m.slice(1).map(decodeURIComponent);
-      const content = await view(...args, params);
-      if (mine === seq) main.replaceChildren(...[content].flat(Infinity).filter((x) => x != null && x !== false));
+      if (params.has("do") && view === viewItem) await runPending(path, params);
+      const [banner, content] = await Promise.all([commandBanner(params), view(...args, params)]);
+      if (mine === seq) main.replaceChildren(...[banner, content].flat(Infinity).filter((x) => x != null && x !== false));
     } catch (e) {
       if (mine === seq) main.replaceChildren(h("p", {}, h("strong", {}, "Couldn't load: "), e.message));
     }
