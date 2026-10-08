@@ -78,6 +78,16 @@ College Board API responses contain access tokens, so delete scratch captures wh
   `browser.wait_for_url()` is `page.wait_for_url` for redirect chains: Playwright's
   rejects on any aborted navigation (`net::ERR_ABORTED; maybe frame was detached?`), even
   one the site cancels itself before redirecting elsewhere, as College Board's does.
+- `browser_context()` routes every request through a no-op handler (`_continue`). Don't
+  remove it. patchright intercepts every request and, without a route, continues each
+  one immediately. Chrome 155 then kills its network service ("DevTools: Duplicate request
+  ID", a bad-message report), which cancels every in-flight request in every tab
+  (`ERR_ABORTED`, "Failed to fetch", Classroom's "Failed to retrieve dependencies of
+  service") every 10 to 30 s, and can leave a page load hung. To count restarts, watch the
+  PID of the process with `network.mojom.NetworkService` in its command line. Kills also
+  leave dumps in `~/.config/google-chrome/Crash Reports/completed`, but throttled, so not
+  one per kill. The dumps hold the environment, credentials included: never read them.
+  Chrome 154 and vanilla Playwright are unaffected. The route also turns off the HTTP cache.
 - `browser.dump_debug()` writes a screenshot and HTML to `data/debug/`. Sources call it
   before re-raising on unexpected pages. The name is fixed per place (no run id), so the next
   failure there replaces it. The API serves them (`GET /debug`, `GET /debug/{file}`), and
