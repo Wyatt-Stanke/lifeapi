@@ -63,7 +63,10 @@ College Board API responses contain access tokens, so delete scratch captures wh
   `self.map_pages()` (a pool of parallel tabs; exceptions are returned, not raised).
 - `auth/`: `google_login` (handles account chooser, identifier, password and consent
   screens), `collegeboard_login` (Okta identifier step, then always picks the Password
-  authenticator), and `clever.launch_app` (Clever dashboard tile, which may open a new tab).
+  authenticator; it returns as soon as the flow leaves the sign-in pages, since the last
+  one, `account.collegeboard.org/login/exchangeToken`, has no form), and
+  `clever.launch_app` (Clever dashboard tile, which may open a new tab; a 5xx from Clever's
+  portal fails at once as "Clever is down").
 - `dates.py` parses dates the way sites display them. Google Classroom omits the year only
   for dates in the current calendar year, so it uses `prefer="current_year"`. Date-only
   values become 23:59 for deadlines and 00:00 for posted dates (`posted=True`).
@@ -81,6 +84,11 @@ College Board API responses contain access tokens, so delete scratch captures wh
   gets a "while reading X" note, which `runner.describe_error` puts in
   `scrape_runs.error` with any chained cause and the last page URL. Bare Playwright
   timeouts don't say what they waited for, so wrap waits in steps.
+- Whose fault: `runner.failure_kind` files each failed run under `scrape_runs.failure`
+  (the API's `failure`): `login` for a `LoginError` anywhere in the chain, `site` for
+  `base.SiteUnavailable` or one of Chrome's can't-connect errors, `scraper` for anything
+  else. When a site answers an HTTP 5xx, raise `SiteUnavailable`, so an outage (Clever's
+  portal answering 503, say) doesn't read as a scraper bug or offer a sign-in fix.
 - Run trail (`trail.py`): each source run records every `lifeapi.*` log line (debug
   too: `__main__` sets the logger to DEBUG and filters the console instead) plus browser
   activity (navigations, XHR/fetch responses, HTTP errors, failed requests, console
@@ -91,10 +99,17 @@ College Board API responses contain access tokens, so delete scratch captures wh
 
 Prefer the platform's own JSON over the DOM wherever the frontend loads it:
 
-- **AP Classroom**: intercepts the app's own responses rather than calling the API
-  directly, because auth headers are app-managed. The profile comes from whichever
-  `fym/graphql` response contains `studentSubjects` (the operation name varies by page).
-  Assignments come from `student_assignments/<subject>?status=assigned|upcoming|completed`.
+- **AP Classroom**: loads the app once and takes the profile from whichever `fym/graphql`
+  response contains `studentSubjects` (the operation name varies by page), along with the
+  `Authorization` header the app sent with it. With that header it fetches
+  `student_assignments/<subject>/?status=assigned|upcoming|completed` from the page (all
+  subjects in about 3 s). Loading the app's assignments pages instead, three per subject,
+  took minutes on the server, and College Board ended the session mid-run. The app checks
+  its session's expiry itself and can send a reused session to the College Board sign-in
+  even after it has fetched the profile, so `_load_app` waits for it to settle on
+  `/subjects` (signing in again, up to `MAX_SIGN_INS`) and keeps only the profile fetched
+  after the last sign-in. A 401 (expired token: the API answers 422 for a malformed one)
+  loads the app again once for a fresh token.
 - **Infinite Campus**: after SSO, calls `/campus/resources/portal/grades` and
   `/grades/detail/<sectionID>` with `page.request`, plus `/campus/api/campus/grading/gpas/my/gpa`
   for overall GPAs (this district shows only a weighted cumulative GPA, as a percentage that weighting can push past 100). The session cookie doesn't persist
@@ -189,7 +204,7 @@ command's stdin (SSH gives sudo no TTY to prompt on). `-k` makes sure sudo alway
 that line, so it never ends up in the VNC stream. The container's `sh` is
 dash: its `kill` rejects `--`, so process groups are killed with `kill -TERM "-$PGID"`.
 `/sources` adds `login_command` (built from `LIFEAPI_REAUTH_TARGET`) when the last run
-failed with `LoginError`, and the Sync status page shows it under the error.
+failed with `failure` `login` (a `LoginError`), and the Sync status page shows it under the error.
 
 ### Manual sync
 
@@ -261,6 +276,17 @@ restores the default. The explorer edits it in the Sync status page's Browser co
 - To test it without a real challenge, serve a page titled "Just a moment..." that embeds
   Turnstile with Cloudflare's test sitekey `3x00000000000000000000FF` (forces the
   checkbox) or `2x00000000000000000000AB` (never passes). Test keys work on localhost.
+- The server's datacenter IP is challenged on every VHL page and never cleared (runs
+  94–101), while VHL lets a home IP straight through. `LIFEAPI_PROXY` sends the hosts in
+  `LIFEAPI_PROXY_DOMAINS` (default VHL and Turnstile) through an upstream proxy, by way of
+  `proxy.relay()`, a local relay that `browser_context()` starts and points Chrome at
+  with a PAC script; everything else stays direct. The proxy in use (2026-10-07)
+  rotates the exit address per connection within an IPv6 /48 (Hurricane Electric),
+  reaches IPv6 only, and answers 407 without `Proxy-Authenticate`, which Chrome can't
+  answer. So the relay sends Basic credentials up front, and tunnels hosts with no IPv6
+  address that are on Cloudflare (VHL) to their Cloudflare IPv6 twin. Cloudflare picks
+  the site by SNI on any of its addresses. Other hosts without IPv6 (VHL's assets on
+  CloudFront) go direct. Never log the proxy URL: it holds the password.
 
 ### Frontend (`frontend/`)
 

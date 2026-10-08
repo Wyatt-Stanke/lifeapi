@@ -408,9 +408,15 @@ const runLog = (runId) => {
   return box;
 };
 
+// A run's `failure`: whose problem it is.
+const FAILURES = {
+  scraper: "Failed (scraper error)",
+  site: "Failed (site down, will retry)",
+  login: "Failed (needs sign-in)",
+};
 // `command` is a source's login_command: shown under the error when a sign-in needs a hand.
-// `runId` is set when the run kept a log.
-const failure = (error, command, runId) => h("span", {}, h("strong", {}, "Failed"), error ? h("details", {}, h("summary", {}, "error"), h("pre", {}, error),
+// `runId` is set when the run kept a log. `kind` is the run's `failure`.
+const failure = (error, command, runId, kind) => h("span", {}, h("strong", {}, FAILURES[kind] ?? "Failed"), error ? h("details", {}, h("summary", {}, "error"), h("pre", {}, error),
   command ? [h("p", {}, "The sign-in needs finishing by hand. From your lifeapi checkout, run this, then sign in in the window that opens:"),
     h("pre", {}, h("code", {}, command)),
     copyButton(async () => command, "Copy command")] : null) : null,
@@ -510,7 +516,7 @@ async function viewStatus() {
         h("tr", {}, ["Source", "Schedule", "Browser", "Next fetch", "Last run", "Result", "Courses", "Items", "Grades", "Last full success", ""].map((x) => h("th", {}, x))),
         sources.map((s) => {
           const r = s.last_run, sc = s.schedule;
-          const result = !r ? "never run" : r.ok == null ? (r.finished_at ? "?" : "running…") : r.ok ? "OK" : failure(r.error, s.login_command, r.has_log ? r.run_id : null);
+          const result = !r ? "never run" : r.ok == null ? (r.finished_at ? "?" : "running…") : r.ok ? "OK" : failure(r.error, s.login_command, r.has_log ? r.run_id : null, r.failure);
           const state = activeFor(s.source);
           return h("tr", {},
             h("td", {}, sourceName(s.source), s.enabled ? null : h("small", {}, " (disabled)")),

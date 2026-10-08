@@ -1,32 +1,54 @@
 """College Board AP Classroom: AP Daily videos and assessments (topic questions, progress
 checks, teacher-authored quizzes) for every AP subject.
 
-The scraper loads the app's own pages and reads the JSON they fetch, so it rides on the
-app's auth instead of reimplementing it:
-  fym/graphql `me`                                      -> subjects + class sections
-  fym/assessments/api/chameleon/student_assignments/<subject>?status=<assigned|upcoming|completed>
-Nothing is opened or started.
+The scraper loads the app once (signing in through College Board when the app sends it
+there) and takes two things from the app's own profile request, the fym/graphql response
+with `studentSubjects`: the subjects and class sections, and the Authorization header the
+app sent. It then calls the assignments API from the page with that header, as the app does:
+  fym/assessments/api/chameleon/student_assignments/<subject>/?status=<assigned|upcoming|completed>
+Loading the app's assignments pages instead (three per subject) took minutes on the server,
+long enough for College Board to end the session mid-run. Nothing is opened or started.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from patchright.async_api import Error as PlaywrightError
 from patchright.async_api import Page, Response
-from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from ... import config
 from ...models import Course, Item, ItemKind, ScrapeResult
 from ..auth.collegeboard import collegeboard_login, is_collegeboard_login_url, on_collegeboard_login
-from ..base import Source, register
+from ..auth.google import LoginError
+from ..base import SiteUnavailable, Source, register
 from ..browser import dump_debug, wait_for_url
 from ..dates import now
 
 BASE = "https://apclassroom.collegeboard.org"
+ASSIGNMENTS = "/fym/assessments/api/chameleon/student_assignments"
 STATUSES = ("assigned", "upcoming", "completed")
+# How often one load of the app may send us to the College Board sign-in. On the server it
+# has looped: sign in, load the app, sent back to the sign-in.
+MAX_SIGN_INS = 2
+
+# GET an API URL from the page, the way the app does. Returns [status, JSON body or null].
+FETCH_JS = r"""
+async ([url, headers, ms]) => {
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(ms) });
+  return [res.status, res.ok ? await res.json() : null];
+}
+"""
+
+
+@dataclass
+class _Profile:
+    me: dict[str, Any]       # the user's `me`, plus `studentSubjects`
+    api: str                 # the API's origin, e.g. https://apc-api-production.collegeboard.org
+    headers: dict[str, str]  # the Authorization header the app sent with the profile request
 
 
 def _dt(s: str | None) -> datetime | None:
@@ -54,7 +76,8 @@ class APClassroom(Source):
         page = await self.new_page()
         try:
             with self.step("signing in and loading the AP Classroom profile"):
-                me = await self._login_and_get_me(page)
+                self._profile = await self._load_app(page)
+            me = self._profile.me
             result = ScrapeResult()
             sections = {str(s["masterSubjectId"]): s for s in me.get("sections") or []}
             for subj in me.get("studentSubjects") or []:
@@ -66,10 +89,12 @@ class APClassroom(Source):
         finally:
             await page.close()
 
-    async def _login_and_get_me(self, page: Page) -> dict[str, Any]:
+    async def _load_app(self, page: Page) -> _Profile:
+        """Load the app, signing in whenever it sends us to College Board, and return the
+        profile it fetched once signed in."""
         # The app asks GraphQL for the user profile (with `studentSubjects`) on load; the
         # operation name varies by page, so match on the payload instead.
-        profiles: list[dict] = []
+        profiles: list[_Profile] = []
         got_profile = asyncio.Event()
 
         async def collect(r: Response) -> None:
@@ -79,23 +104,37 @@ class APClassroom(Source):
                 except Exception:
                     return
                 if data.get("studentSubjects") is not None:
-                    profiles.append(data)
+                    auth = (await r.request.all_headers()).get("authorization")
+                    profiles.append(_Profile(
+                        me={**(data.get("me") or {}), "studentSubjects": data["studentSubjects"]},
+                        api=r.url.split("/fym/", 1)[0],
+                        headers={"authorization": auth} if auth else {},
+                    ))
                     got_profile.set()
 
         page.on("response", collect)
         try:
             await page.goto(BASE)
-            # Either the app loads (session still valid) or we bounce through the CB login.
-            # With an expired session the app can cancel its first redirect to the login
-            # and start another, which wait_for_url rides out.
-            await wait_for_url(
-                page,
-                lambda u: is_collegeboard_login_url(u) or "/subjects" in u or "/assignments" in u,
-                timeout=config.timeout(45_000),
-            )
-            if on_collegeboard_login(page):
+            for sign_ins in range(MAX_SIGN_INS + 1):
+                # The app settles on a subject page, or sends us to the College Board sign-in
+                # when its session has ended. It decides that itself, sometimes after it has
+                # fetched the profile, and can cancel its first redirect and start another,
+                # which wait_for_url rides out.
+                await wait_for_url(
+                    page,
+                    lambda u: is_collegeboard_login_url(u) or "/subjects" in u or "/assignments" in u,
+                    timeout=config.timeout(45_000),
+                )
+                if not on_collegeboard_login(page):
+                    break
+                if sign_ins == MAX_SIGN_INS:
+                    await dump_debug(page, "ap_classroom_sign_in_loop")
+                    raise LoginError(
+                        f"AP Classroom sent us back to the College Board sign-in after {sign_ins} sign-ins")
+                # A profile fetched before the redirect came with a session the app rejected.
+                profiles.clear()
+                got_profile.clear()
                 await collegeboard_login(page)
-                await wait_for_url(page, lambda u: "apclassroom.collegeboard.org" in u, timeout=config.timeout(45_000))
             if not await _wait_event(got_profile):
                 # Loaded from cache before we were listening: reload once.
                 await page.reload()
@@ -105,8 +144,33 @@ class APClassroom(Source):
         if not profiles:
             await dump_debug(page, "ap_classroom_me")
             raise RuntimeError(f"AP Classroom didn't load the user profile (at {page.url})")
-        data = profiles[-1]
-        return {**(data.get("me") or {}), "studentSubjects": data["studentSubjects"]}
+        if not profiles[-1].headers:
+            raise RuntimeError("AP Classroom's profile request had no Authorization header to call its API with")
+        return profiles[-1]
+
+    async def _get(self, page: Page, path: str) -> dict[str, Any]:
+        """GET `path` from the AP Classroom API with the app's Authorization header. When the
+        token has expired, or the request fails (the app navigating away to the sign-in
+        destroys the page it ran in), loads the app again once for a fresh token."""
+        for retry in (False, True):
+            try:
+                status, body = await page.evaluate(
+                    FETCH_JS, [self._profile.api + path, self._profile.headers, config.timeout(30_000)])
+            except PlaywrightError as e:
+                if retry or page.is_closed():
+                    raise
+                why = f"the request failed ({str(e).splitlines()[0]})"
+            else:
+                if status == 200:
+                    return body
+                if status >= 500:
+                    raise SiteUnavailable(f"AP Classroom's API answered HTTP {status} for {path}")
+                if status != 401 or retry:
+                    raise RuntimeError(f"AP Classroom's API answered HTTP {status} for {path}")
+                why = "its token expired"
+            self.log.info("Loading AP Classroom again for a fresh token: %s", why)
+            self._profile = await self._load_app(page)
+        raise AssertionError("unreachable")
 
     def _course(self, subj: dict, section: dict | None) -> Course:
         sid = str(subj["id"])
@@ -122,35 +186,7 @@ class APClassroom(Source):
     async def _assignments(self, page: Page, course: Course) -> list[Item]:
         items: dict[str, Item] = {}
         for status in STATUSES:
-            # Every assignments-API response, so a timeout can say what came back instead.
-            seen: list[str] = []
-
-            def note(r: Response) -> None:
-                if "/student_assignments/" in r.url:
-                    seen.append(f"HTTP {r.status} {r.url.split('/student_assignments/', 1)[1]}")
-
-            timeout = config.timeout(30_000)
-            page.on("response", note)
-            try:
-                async with page.expect_response(
-                    lambda r: "/student_assignments/" in r.url and f"status={status}" in r.url,
-                    timeout=timeout,
-                ) as resp:
-                    await page.goto(f"{BASE}/{course.id}/assignments?status={status}")
-                data = await (await resp.value).json()
-            except PlaywrightTimeoutError as e:
-                await dump_debug(page, f"ap_classroom_{course.id}_{status}")
-                raise TimeoutError(
-                    f"AP Classroom never fetched the {status!r} assignments for {course.name} "
-                    f"(subject {course.id}) within {timeout // 1000}s. The page ended at {page.url}. "
-                    + (f"Assignment responses it did get: {'; '.join(seen)}" if seen
-                       else "It made no student_assignments requests at all (signed out, or the page didn't finish loading?)")
-                ) from e
-            except Exception:
-                await dump_debug(page, f"ap_classroom_{course.id}_{status}")
-                raise
-            finally:
-                page.remove_listener("response", note)
+            data = await self._get(page, f"{ASSIGNMENTS}/{course.id}/?status={status}&subject={course.id}")
             for a in data.get("assignments") or []:
                 item = self._item(course, a)
                 items.setdefault(item.id, item)

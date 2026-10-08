@@ -96,10 +96,10 @@ INCLUDE_INACTIVE = Query(False, description="Also return records that no longer 
                                             "their source (`active: false`).")
 
 
-def _login_command(source: str, error: str | None) -> str | None:
+def _login_command(source: str, run: dict[str, Any] | None) -> str | None:
     """The command that finishes a stuck sign-in by hand (deploy/reauth.py), for a run that
     failed on a login challenge. Run it from a checkout of this repository."""
-    if not error or not error.startswith("LoginError:"):
+    if not run or run["failure"] != "login":
         return None
     target = shlex.quote(config.REAUTH_TARGET) if config.REAUTH_TARGET else "<user@server>"
     return f"python3 deploy/reauth.py {target} --only {shlex.quote(source)}"
@@ -152,15 +152,16 @@ def sources(conn: sqlite3.Connection = Depends(db)) -> list[SourceStatus]:
             (name,),
         ).fetchone()
         partials = REGISTRY[name].partials if name in REGISTRY else {}
+        last = r and storage.run_to_dict(r)
         out.append({
             "source": name,
             "enabled": name in REGISTRY and REGISTRY[name].enabled,
             "partials": [{"name": k, "description": v} for k, v in partials.items()],
             "schedule": _schedule(conn, name),
             "browser": _browser(conn, name),
-            "last_run": r and storage.run_to_dict(r),
+            "last_run": last,
             "last_success_at": ok["finished_at"] if ok else None,
-            "login_command": _login_command(name, r and r["error"]),
+            "login_command": _login_command(name, last),
         })
     return out
 

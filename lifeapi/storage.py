@@ -70,7 +70,8 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
     items INTEGER,
     grades INTEGER,
     log TEXT,  -- a failed run's trail of log lines and browser activity (scraper/trail.py)
-    partial TEXT  -- the partial fetch this run did (`Source.partials`); NULL for a full one
+    partial TEXT,  -- the partial fetch this run did (`Source.partials`); NULL for a full one
+    failure TEXT  -- whose problem a failed run is: 'scraper', 'site' or 'login' (runner.failure_kind)
 );
 -- Manual sync requests from the API. `sources` is a JSON list, or NULL for every enabled
 -- source. The scraper sets started_at when a run picks one up, then finished_at and ok.
@@ -142,7 +143,7 @@ def connect(path: Path | None = None, readonly: bool = False) -> Iterator[sqlite
 def _migrate(conn: sqlite3.Connection) -> None:
     """Columns added after a table was first created."""
     columns = {r[1] for r in conn.execute("PRAGMA table_info(scrape_runs)")}
-    for name in ("log", "partial"):
+    for name in ("log", "partial", "failure"):
         if name not in columns:
             conn.execute(f"ALTER TABLE scrape_runs ADD COLUMN {name} TEXT")
 
@@ -170,15 +171,19 @@ def finish_run(
     run_id: int,
     result: ScrapeResult | None,
     error: str | None = None,
+    failure: str | None = None,
     log: str | None = None,
 ) -> None:
+    """Record how a run ended: `result` if it succeeded, otherwise `error`, and `failure`
+    for whose problem that is ("scraper", "site" or "login"; see `runner.failure_kind`)."""
     conn.execute(
-        "UPDATE scrape_runs SET finished_at=?, ok=?, error=?, courses=?, items=?, grades=?, log=? "
-        "WHERE run_id=?",
+        "UPDATE scrape_runs SET finished_at=?, ok=?, error=?, failure=?, courses=?, items=?, "
+        "grades=?, log=? WHERE run_id=?",
         (
             now_iso(),
             int(error is None),
             error,
+            failure if error is not None else None,
             len(result.courses) if result else None,
             len(result.items) if result else None,
             len(result.grades) if result else None,
@@ -395,6 +400,9 @@ def clear_sync_requests(conn: sqlite3.Connection) -> int:
 
 def run_to_dict(row: sqlite3.Row, with_log: bool = False) -> dict[str, Any]:
     log = row["log"] if "log" in row.keys() else None  # older databases lack the column
+    failure = row["failure"] if "failure" in row.keys() else None
+    if row["ok"] == 0 and failure is None:  # recorded before runs had a failure kind
+        failure = "login" if (row["error"] or "").startswith("LoginError:") else "scraper"
     out = {
         "run_id": row["run_id"],
         "source": row["source"],
@@ -403,6 +411,7 @@ def run_to_dict(row: sqlite3.Row, with_log: bool = False) -> dict[str, Any]:
         "finished_at": row["finished_at"],
         "ok": None if row["ok"] is None else bool(row["ok"]),
         "error": row["error"],
+        "failure": failure,
         "counts": {"courses": row["courses"], "items": row["items"], "grades": row["grades"]},
         "has_log": log is not None,
     }

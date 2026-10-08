@@ -8,6 +8,7 @@ from patchright.async_api import Page
 
 from ... import config
 from ..browser import dump_debug, wait_gone, wait_until
+from ..trail import redact
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ async def google_login(page: Page) -> None:
     if on_google_login(page):
         await dump_debug(page, "google_login_stuck")
         raise LoginError(
-            f"Stuck on Google sign-in at {page.url} (2-step verification or a captcha?). "
+            f"Stuck on Google sign-in at {redact(page.url)} (2-step verification or a captcha?). "
             "Run `python -m lifeapi.scraper --headed --only google_classroom` once and "
             "finish the sign-in by hand; the session is saved in the browser profile."
         )

@@ -18,7 +18,7 @@ from patchright.async_api import Page
 from ... import config
 from ...models import GPA_PLACES, Course, Grade, GradeEntry, ScrapeResult
 from ..auth.google import LoginError, google_login, is_google_login_url, on_google_login
-from ..base import Source, register
+from ..base import SiteUnavailable, Source, register
 from ..browser import dump_debug
 
 
@@ -90,6 +90,8 @@ class InfiniteCampus(Source):
             r = await page.request.get(
                 self.base + path, headers={"Accept": "application/json"}, timeout=config.timeout(30_000)
             )
+        if r.status >= 500:
+            raise SiteUnavailable(f"GET {path} -> HTTP {r.status}")
         if not r.ok:
             raise RuntimeError(f"GET {path} -> HTTP {r.status}")
         return await r.json()

@@ -14,13 +14,15 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
+from typing import Any
 
+from patchright.async_api import Error as PlaywrightError
 from patchright.async_api import Page
 
 from ... import config
 from ...models import Course, Item, ItemKind, ScrapeResult
 from ..auth.clever import launch_app
-from ..base import Source, register
+from ..base import SiteUnavailable, Source, register
 from ..browser import dump_debug
 from ..cloudflare import pass_challenge
 from ..dates import LOCAL_TZ, now
@@ -66,6 +68,16 @@ async (url) => {
   return res.json();
 }
 """
+
+
+async def _fetch(app: Page, js: str, url: str) -> Any:
+    """Run CALENDAR_JS or JSON_JS for `url`. An HTTP 5xx is VHL failing, not the scraper."""
+    try:
+        return await app.evaluate(js, url)
+    except PlaywrightError as e:
+        if re.search(r"\bHTTP 5\d\d for ", str(e)):
+            raise SiteUnavailable(f"VHL answered {str(e).splitlines()[0]}") from e
+        raise
 
 
 def _months(today: date) -> list[str]:
@@ -142,19 +154,19 @@ class VistaHigherLearning(Source):
         # Due dates: calendar months around today, plus anything still late.
         days: dict[str, dict] = {}
         for month in _months(now().date()):
-            for day_id, labels, total in await app.evaluate(
-                CALENDAR_JS, f"{base}/study_schedule/event_calendar/{month}"
+            for day_id, labels, total in await _fetch(
+                app, CALENDAR_JS, f"{base}/study_schedule/event_calendar/{month}"
             ):
                 d = f"{day_id[:4]}-{day_id[4:6]}-{day_id[6:]}"
                 days[d] = {"labels": labels, "estimated_time": (total or "").strip() or None}
-        for summary in await app.evaluate(JSON_JS, f"{base}/past_assignment_summaries"):
+        for summary in await _fetch(app, JSON_JS, f"{base}/past_assignment_summaries"):
             days.setdefault(summary["due_date"], {}).update(
                 late=summary.get("incomplete"), estimated_time=summary.get("estimated_time")
             )
 
         items: list[Item] = []
         for d in sorted(days):
-            data = await app.evaluate(JSON_JS, f"{base}/assignments_by_due_date?due_date={d}")
+            data = await _fetch(app, JSON_JS, f"{base}/assignments_by_due_date?due_date={d}")
             for g in data.get("groups", []):
                 items.append(self._item(course, d, g, days[d], data.get("due_date_start_url")))
         self.log.info("%s: %d assignment groups over %d due dates", course.name, len(items), len(days))

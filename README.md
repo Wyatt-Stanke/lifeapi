@@ -170,6 +170,10 @@ Environment variables: `GOOGLE_USERNAME`, `GOOGLE_PASSWORD`, `COLLEGEBOARD_USERN
 `COLLEGEBOARD_PASSWORD` and `LIFEAPI_API_TOKEN` are required. Compose refuses to start
 without them. `LIFEAPI_SCRAPE_INTERVAL`, `LIFEAPI_SCRAPE_MAX_RUN`, `LIFEAPI_SYNC_POLL`, `LIFEAPI_TIMEOUT_SCALE`,
 `CLEVER_PORTAL_URL`, `INFINITE_CAMPUS_URL` and `LIFEAPI_REAUTH_TARGET` are optional.
+`LIFEAPI_PROXY` (`http://user:password@host:port`, optional) sends the sites in
+`LIFEAPI_PROXY_DOMAINS` (default `vhlcentral.com,challenges.cloudflare.com`) through a proxy,
+for when their bot checks challenge the server's IP. VHL's Cloudflare does that to a
+datacenter address. Everything else, sign-ins included, stays direct.
 
 Every service has a healthcheck. `api` and `frontend` are checked over HTTP, and
 `frontend` waits for `api` to be healthy. `scraper` turns unhealthy only when a run hangs
