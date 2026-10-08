@@ -10,6 +10,7 @@ from patchright.async_api import BrowserContext, Page
 
 from ... import config
 from ..browser import dump_debug, wait_until
+from ..trail import redact
 from .google import LoginError, google_login, is_google_login_url, on_google_login
 
 log = logging.getLogger(__name__)
@@ -17,7 +18,11 @@ log = logging.getLogger(__name__)
 
 async def clever_dashboard(page: Page) -> None:
     """Get `page` onto the signed-in Clever student dashboard."""
-    await page.goto(config.CLEVER_PORTAL_URL)
+    response = await page.goto(config.CLEVER_PORTAL_URL)
+    # Clever's portal sometimes answers 503 from its load balancer. The page then never
+    # shows a sign-in button or apps, so say so now rather than time out looking for them.
+    if response and response.status >= 500:
+        raise RuntimeError(f"Clever is down: HTTP {response.status} for {redact(page.url)}. Try again later.")
     google_btn = page.get_by_role("link", name=re.compile("google", re.I)).or_(
         page.get_by_role("button", name=re.compile("google", re.I))
     )

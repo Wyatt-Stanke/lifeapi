@@ -131,7 +131,7 @@ async def wait_until(
     if shown is not None:
         waits.append(asyncio.ensure_future(shown.first.wait_for(timeout=timeout)))
     if url is not None:
-        waits.append(asyncio.ensure_future(page.wait_for_url(url, timeout=timeout)))
+        waits.append(asyncio.ensure_future(wait_for_url(page, url, timeout=timeout)))
     pending = set(waits)
     try:
         while pending:

@@ -63,7 +63,10 @@ College Board API responses contain access tokens, so delete scratch captures wh
   `self.map_pages()` (a pool of parallel tabs; exceptions are returned, not raised).
 - `auth/`: `google_login` (handles account chooser, identifier, password and consent
   screens), `collegeboard_login` (Okta identifier step, then always picks the Password
-  authenticator), and `clever.launch_app` (Clever dashboard tile, which may open a new tab).
+  authenticator; it returns as soon as the flow leaves the sign-in pages, since the last
+  one, `account.collegeboard.org/login/exchangeToken`, has no form), and
+  `clever.launch_app` (Clever dashboard tile, which may open a new tab; a 5xx from Clever's
+  portal fails at once as "Clever is down").
 - `dates.py` parses dates the way sites display them. Google Classroom omits the year only
   for dates in the current calendar year, so it uses `prefer="current_year"`. Date-only
   values become 23:59 for deadlines and 00:00 for posted dates (`posted=True`).
@@ -91,10 +94,17 @@ College Board API responses contain access tokens, so delete scratch captures wh
 
 Prefer the platform's own JSON over the DOM wherever the frontend loads it:
 
-- **AP Classroom**: intercepts the app's own responses rather than calling the API
-  directly, because auth headers are app-managed. The profile comes from whichever
-  `fym/graphql` response contains `studentSubjects` (the operation name varies by page).
-  Assignments come from `student_assignments/<subject>?status=assigned|upcoming|completed`.
+- **AP Classroom**: loads the app once and takes the profile from whichever `fym/graphql`
+  response contains `studentSubjects` (the operation name varies by page), along with the
+  `Authorization` header the app sent with it. With that header it fetches
+  `student_assignments/<subject>/?status=assigned|upcoming|completed` from the page (all
+  subjects in about 3 s). Loading the app's assignments pages instead, three per subject,
+  took minutes on the server, and College Board ended the session mid-run. The app checks
+  its session's expiry itself and can send a reused session to the College Board sign-in
+  even after it has fetched the profile, so `_load_app` waits for it to settle on
+  `/subjects` (signing in again, up to `MAX_SIGN_INS`) and keeps only the profile fetched
+  after the last sign-in. A 401 (expired token: the API answers 422 for a malformed one)
+  loads the app again once for a fresh token.
 - **Infinite Campus**: after SSO, calls `/campus/resources/portal/grades` and
   `/grades/detail/<sectionID>` with `page.request`, plus `/campus/api/campus/grading/gpas/my/gpa`
   for overall GPAs (this district shows only a weighted cumulative GPA, as a percentage that weighting can push past 100). The session cookie doesn't persist

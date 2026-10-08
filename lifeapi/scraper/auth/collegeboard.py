@@ -7,7 +7,8 @@ import logging
 from patchright.async_api import Page
 
 from ... import config
-from ..browser import dump_debug, wait_gone
+from ..browser import dump_debug, wait_gone, wait_until
+from ..trail import redact
 from .google import LoginError
 
 log = logging.getLogger(__name__)
@@ -15,6 +16,12 @@ log = logging.getLogger(__name__)
 
 def is_collegeboard_login_url(url: str) -> bool:
     return "idp.collegeboard.org" in url or "account.collegeboard.org/login" in url
+
+
+def is_collegeboard_error_url(url: str) -> bool:
+    """College Board's generic sign-in failure page, which it shows when the last step
+    (trading Okta's code for a College Board session) fails."""
+    return "account.collegeboard.org/login/error" in url
 
 
 def on_collegeboard_login(page: Page) -> bool:
@@ -33,12 +40,17 @@ async def collegeboard_login(page: Page) -> None:
         # "Verify it's you with a security method" chooser: always pick Password (not email).
         choose_pw = page.locator('[data-se="okta_password"] a[data-se="button"]:visible, '
                                  'a[aria-label="Select Password."]:visible')
-        # Redirects between account.collegeboard.org and the Okta page take a moment.
-        try:
-            await ident.or_(pw).or_(choose_pw).first.wait_for(timeout=config.timeout(20_000))
-        except Exception:
-            if not on_collegeboard_login(page):
-                return
+        # Redirects between account.collegeboard.org and the Okta page take a moment. After
+        # the password, the flow leaves through account.collegeboard.org/login/exchangeToken,
+        # which has no form, so also stop waiting once the page leaves the sign-in pages.
+        found = await wait_until(
+            page, ident.or_(pw).or_(choose_pw),
+            url=lambda u: not is_collegeboard_login_url(u) or is_collegeboard_error_url(u),
+            timeout=config.timeout(20_000),
+        )
+        if not on_collegeboard_login(page):
+            return
+        if not found or is_collegeboard_error_url(page.url):
             break
 
         # Cookie banner can cover the form.
@@ -66,4 +78,8 @@ async def collegeboard_login(page: Page) -> None:
 
     if on_collegeboard_login(page):
         await dump_debug(page, "collegeboard_login_stuck")
-        raise LoginError(f"Stuck on College Board sign-in at {page.url} (bad password or MFA?)")
+        if is_collegeboard_error_url(page.url):
+            raise LoginError(
+                f"College Board's sign-in ended on its error page ({redact(page.url)}) after the "
+                "password was accepted, while trading the sign-in code for a session")
+        raise LoginError(f"Stuck on College Board sign-in at {redact(page.url)} (bad password or MFA?)")
