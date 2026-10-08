@@ -12,12 +12,15 @@ pruned after KEEP_RUNS_DAYS.
 
 from __future__ import annotations
 
+import base64
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Collection, Iterator
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 from . import config
 from .models import Course, Grade, Item, ScrapeResult
@@ -151,6 +154,25 @@ CREATE TABLE IF NOT EXISTS custom_items (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+-- Commands run on items (`POST /extra/commands`), each with the values it replaced, so any of
+-- them can be undone, however old. `before`/`after` are JSON {field: value} for the fields it
+-- touched: `due_at` (item_marks' UTC value; null is the source's), `note`, `status`. An undo
+-- is an action too (`undo_of`), and the action it undid gets `undone_by`.
+CREATE TABLE IF NOT EXISTS actions (
+    action_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    id TEXT NOT NULL,
+    title TEXT,
+    command TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    notes TEXT NOT NULL DEFAULT '[]',
+    before TEXT NOT NULL,
+    after TEXT NOT NULL,
+    undo_of INTEGER,
+    undone_by INTEGER,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS actions_item ON actions (source, id, action_id);
 """
 
 CUSTOM_PREFIX = "lifeapi-"
@@ -596,7 +618,7 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return data
 
 
-def _local(utc: str | None) -> str | None:
+def local_iso(utc: str | None) -> str | None:
     """A stored UTC timestamp in the school's time zone, like the scraped dates in `data`."""
     return datetime.fromisoformat(utc).astimezone(LOCAL_TZ).isoformat() if utc else None
 
@@ -606,10 +628,10 @@ def item_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     data = row_to_dict(row)
     data["source_due_at"] = data.get("due_at")
     if row["user_due_at"]:
-        data["due_at"] = _local(row["user_due_at"])
+        data["due_at"] = local_iso(row["user_due_at"])
     data["converted_from"] = row["converted_from"]
     data["user"] = None if row["user_updated_at"] is None else {
-        "note": row["note"], "due_at": _local(row["user_due_at"]),
+        "note": row["note"], "due_at": local_iso(row["user_due_at"]),
         "updated_at": row["user_updated_at"],
     }
     return data
@@ -617,6 +639,59 @@ def item_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 def get_item(conn: sqlite3.Connection, source: str, id_: str) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM item_view WHERE source=? AND id=?", (source, id_)).fetchone()
+
+
+def _classroom_id(segment: str) -> str | None:
+    """Google Classroom puts base64 of the numeric ids we store in its URLs."""
+    if segment.isdigit():
+        return segment
+    try:
+        text = base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)).decode("ascii")
+    except ValueError:
+        return None
+    return text if text.isdigit() else None
+
+
+def _url_key(host: str, path: str) -> str:
+    return host.lower().removeprefix("www.") + re.sub(r"^/u/\d+(?=/|$)", "", path).rstrip("/")
+
+
+def find_item_by_url(conn: sqlite3.Connection, url: str) -> tuple[str, str] | None:
+    """(source, id) of the item a link points at: an explorer link (`…#/item/<source>/<id>`,
+    or the explorer's address in front of a platform link), a Google Classroom link (by the
+    ids in it, under any account's /u/<n>), or any item's stored `url`, matched on host and
+    path with query parameters breaking ties, as the explorer's link resolver does."""
+    url = url.strip()
+    if m := re.search(r"#/item/([^/?#]+)/([^/?#]+)", url):
+        return unquote(m.group(1)), unquote(m.group(2))
+    if m := re.match(r"^(?:https?://)?[^/]+/+(https?:/{1,2}.+)$", url, re.I):
+        url = re.sub(r"^(https?):/(?!/)", r"\1://", m.group(1), flags=re.I)
+    if not re.match(r"^[a-z][a-z0-9+.-]*://", url, re.I):
+        url = "https://" + url
+    u = urlsplit(url)
+    host, path = (u.hostname or ""), u.path
+    if host == "classroom.google.com":
+        parts = [p for p in re.sub(r"^/u/\d+(?=/|$)", "", path).split("/") if p]
+        if len(parts) >= 4 and parts[0] == "c" and (item := _classroom_id(parts[3])):
+            if get_item(conn, "google_classroom", item):
+                return "google_classroom", item
+    key, query = _url_key(host, path), dict(parse_qsl(u.query))
+    best, best_score = None, None
+    for row in conn.execute("SELECT source, id, data FROM item_view"):
+        stored = json.loads(row["data"]).get("url")
+        if not stored:
+            continue
+        v = urlsplit(stored)
+        if _url_key(v.hostname or "", v.path) != key:
+            continue
+        score = 0
+        for k, val in parse_qsl(v.query):
+            if k == "authuser":
+                continue
+            score += 1 if query.get(k) == val else (-1000 if k in query else -1)
+        if score > -1000 and (best_score is None or score > best_score):
+            best, best_score = (row["source"], row["id"]), score
+    return best
 
 
 def set_mark(conn: sqlite3.Connection, source: str, id_: str, **fields: str | None) -> None:
@@ -659,6 +734,59 @@ def save_custom_item(conn: sqlite3.Connection, item: Item, touch: bool = True) -
     )
 
 
+ACTION_FIELDS = ("due_at", "note", "status")
+
+
+def item_fields(conn: sqlite3.Connection, source: str, id_: str, names: Collection[str]) -> dict[str, Any]:
+    """The stored values an action can change: `due_at` and `note` from item_marks (so a
+    `due_at` of None means the source's deadline), `status` of a custom item."""
+    mark = conn.execute("SELECT note, due_at FROM item_marks WHERE source=? AND id=?",
+                        (source, id_)).fetchone()
+    out: dict[str, Any] = {}
+    for name in names:
+        if name == "status":
+            row = conn.execute("SELECT status FROM custom_items WHERE custom_id=?", (custom_id(id_),)).fetchone()
+            out[name] = row["status"] if row else None
+        else:
+            out[name] = mark[name] if mark else None
+    return out
+
+
+def apply_fields(conn: sqlite3.Connection, source: str, id_: str, values: dict[str, Any]) -> None:
+    """Set the fields `item_fields` reads. Doesn't commit."""
+    marks = {k: v for k, v in values.items() if k in ("due_at", "note")}
+    if marks:
+        set_mark(conn, source, id_, **marks)
+    if "status" in values:
+        row = conn.execute("SELECT data FROM custom_items WHERE custom_id=?", (custom_id(id_),)).fetchone()
+        item = Item.model_validate_json(row["data"])
+        item.status = values["status"]
+        save_custom_item(conn, item)
+
+
+def record_action(conn: sqlite3.Connection, source: str, id_: str, title: str | None,
+                  command: str, summary: str, notes: list[str], before: dict[str, Any],
+                  after: dict[str, Any], undo_of: int | None = None) -> int:
+    """Log an applied command. With `undo_of`, it undid that action, so `undone_by` is
+    updated down the chain: the undone action is marked; if it was itself an undo, what that
+    undid is in effect again; and if that was an undo too, its target is undone again. So
+    `undone_by IS NULL` means in effect. Doesn't commit."""
+    cur = conn.execute(
+        "INSERT INTO actions (source, id, title, command, summary, notes, before, after, undo_of, "
+        "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (source, id_, title, command, summary, json.dumps(notes), json.dumps(before),
+         json.dumps(after), undo_of, now_iso()))
+    if undo_of is not None:
+        conn.execute("UPDATE actions SET undone_by=? WHERE action_id=?", (cur.lastrowid, undo_of))
+        back = conn.execute("SELECT undo_of FROM actions WHERE action_id=?", (undo_of,)).fetchone()[0]
+        if back is not None:
+            conn.execute("UPDATE actions SET undone_by=NULL WHERE action_id=?", (back,))
+            again = conn.execute("SELECT undo_of FROM actions WHERE action_id=?", (back,)).fetchone()[0]
+            if again is not None:
+                conn.execute("UPDATE actions SET undone_by=? WHERE action_id=?", (back, again))
+    return cur.lastrowid
+
+
 def delete_custom_item(conn: sqlite3.Connection, source: str, item_id: str) -> None:
     """Delete a custom item and its marks. Doesn't commit."""
     conn.execute("DELETE FROM custom_items WHERE custom_id=?", (custom_id(item_id),))
@@ -672,5 +800,6 @@ __all__ = [
     "abandon_sync_requests", "sync_request_to_dict", "clear_sync_requests", "run_to_dict",
     "get_schedule", "set_schedule", "reset_schedule", "next_fetch", "get_browser",
     "set_browser", "reset_browser", "item_to_dict", "get_item", "set_mark", "custom_id",
-    "create_custom_item", "save_custom_item", "delete_custom_item",
+    "create_custom_item", "save_custom_item", "delete_custom_item", "item_fields", "apply_fields",
+    "record_action", "find_item_by_url", "local_iso",
 ]

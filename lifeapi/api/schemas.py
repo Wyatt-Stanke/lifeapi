@@ -404,6 +404,73 @@ class ConversionDraft(BaseModel):
                                              "announcement.")
 
 
+class CommandRequest(BaseModel):
+    """A command for one item, in words, e.g. `{"source": "google_classroom", "item_id":
+    "889402927132", "command": "due friday 5pm"}`."""
+
+    command: str | None = Field(
+        None, max_length=500,
+        description="What to do, as you'd say it. Due dates: `set the due date to today at 11:59 "
+                    "PM`, `due at 11:59`, `due oct 8 3 o'clock`, `due wednesday` (keeps the time), "
+                    "`due at 5` (keeps the date), `due in 3 days`, `push it back a day`, `2 hours "
+                    "earlier`, `+1 week`, `reset the due date`. Notes: `note: bring a calculator`, "
+                    "`add note: …` (adds a line), `clear note`. Assignments made in lifeapi: `done`, "
+                    "`not done`. And `undo`, `redo`. Typos, spoken numbers (`eleven fifty nine pm`) "
+                    "and filler (`please`, `hey`) are fine. Optional when `url` ends with `##` and the "
+                    "command.", examples=["set the due date to today at 11:59 PM"])
+    source: str | None = Field(None, description="The item's `source`, with `item_id`.",
+                               examples=["google_classroom"])
+    item_id: str | None = Field(None, description="The item's `id`, with `source`.",
+                                examples=["889402927132"])
+    url: str | None = Field(
+        None, max_length=4000,
+        description="Instead of `source` and `item_id`: a link to the item, as copied from its "
+                    "platform (a Google Classroom assignment link from any signed-in account works), "
+                    "or from the explorer. It may end with `##` and the command, like the explorer's "
+                    "command links.",
+        examples=["https://classroom.google.com/c/ODU2MTYxODI5MTU3/a/ODg5NDAyOTI3MTMy/details"])
+    dry_run: bool = Field(False, description="Say what the command would do without doing it.")
+
+
+class FieldChange(BaseModel):
+    field: Literal["due_at", "note", "status"] = Field(
+        description="`due_at`: the student's own deadline (`user.due_at`), where null means the "
+                    "platform's. `note`: the note. `status`: an assignment made in lifeapi.")
+    before: Any = Field(description="Its value before (`due_at` in the school's local time).")
+    after: Any = Field(description="Its value after.")
+
+
+class Action(BaseModel):
+    """A command that ran (or would run, for `dry_run`). Every one can be undone with `POST
+    /extra/commands/{action_id}/undo`, however long ago."""
+
+    action_id: int | None = Field(description="Id for `GET /extra/commands/{action_id}` and undo. "
+                                              "Null when nothing was changed (a dry run, or the item "
+                                              "already was that way).")
+    kind: Literal["command", "undo", "redo"] = Field(
+        description="`undo` undid a command (`undo_of`); `redo` undid an undo, so the command is "
+                    "back. Undoing an `undo` redoes; undoing a `command` or `redo` undoes.")
+    source: str
+    item_id: str
+    title: str | None = Field(description="The item's title when the command ran.")
+    command: str = Field(description="The command as given (`undo` for an undo).")
+    summary: str = Field(description="What it did, in a sentence to show the person, e.g. `Due date "
+                                     "set to today, Thu Oct 8 at 11:59 PM (was tomorrow, Fri Oct 9 "
+                                     "at 11:59 PM).`")
+    notes: list[str] = Field(description="How it read anything ambiguous (`No am or pm said, so "
+                                         "11:59 PM; …`, `Kept its date, Fri Oct 9.`, `Read it as "
+                                         "“due wednesday”.`), and warnings (`That's in the past.`). "
+                                         "Show these too.")
+    changes: list[FieldChange]
+    undo_of: int | None = Field(description="For an undo: the action it undid.")
+    undone_by: int | None = Field(description="Set once this action has been undone: the undo's id.")
+    created_at: Timestamp | None = Field(description="When it ran (UTC); null if it didn't.")
+
+
+class CommandResult(Action):
+    item: Item | None = Field(description="The item as it is now; null if it was deleted since.")
+
+
 class Health(BaseModel):
     status: Literal["ok"]
 
@@ -439,9 +506,10 @@ TAGS = [
     {"name": "status", "description": "Which sources exist, how fresh their data is, how often "
                                       "they're fetched and with what browser, and manual sync "
                                       "requests."},
-    {"name": "extra", "description": "Turning announcements into assignments: machine-made drafts, "
+    {"name": "extra", "description": "Turning announcements into assignments (machine-made drafts, "
                                      "and assignments the student makes, which then appear among "
-                                     "the items like any other."},
+                                     "the items like any other), and commands in words, each "
+                                     "undoable."},
 ]
 
 DESCRIPTION = f"""
@@ -473,6 +541,7 @@ announcements); those additions stay in lifeapi and never reach a platform.
 | I got an extension | `PUT /items/{{source}}/{{item_id}}/due` (`DELETE` undoes it) |
 | An announcement says something is due | `GET /extra/drafts/{{source}}/{{item_id}}`, then `POST /extra/assignments` |
 | Mark one of those done | `PATCH /extra/assignments/{{source}}/{{item_id}}` with `{{"status": "done"}}` |
+| Do something said in words ("due friday 5pm", "push it back a day", "undo") | `POST /extra/commands` |
 
 ## Sources
 
@@ -528,6 +597,14 @@ titles, kinds and deadlines read from the announcement's text (dates count from 
 posted) and the course's habits (its usual due time, how it names numbered work), plus
 existing items the announcement may be about. It's a deterministic text analyser, not an AI
 model, so check its suggestions before saving them; they're meant to fill a form.
+
+**Commands.** `POST /extra/commands` takes an item (by `source` and `item_id`, or by its link)
+and a command in words: due dates (`set the due date to today at 11:59 PM`, `due at 11:59`,
+`due oct 8 3 o'clock`, `push it back a day`, `reset the due date`), notes (`note: …`), `done`,
+`undo`. What isn't said is kept (`due at 5pm` keeps the date), a time without am/pm is read
+the way a student would mean it, and the answer says what was done and how anything
+ambiguous was read; show `summary` and `notes` to the person. Every command can be undone,
+however old (`POST /extra/commands/{{action_id}}/undo`, or the command `undo`).
 
 **Deletions.** A record that disappears from its platform is kept with `active: false` and
 hidden from every list unless you pass `include_inactive=true`. If a source's scrape fails,

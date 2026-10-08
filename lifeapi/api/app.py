@@ -31,12 +31,12 @@ from ..models import Item as ItemRecord
 from ..scraper import sources as _sources  # noqa: F401  (registers all sources)
 from ..scraper.base import REGISTRY, Source
 from ..scraper.dates import LOCAL_TZ
-from . import drafts
+from . import commands, drafts
 from .schemas import (
-    DESCRIPTION, DONE_STATUSES, TAGS, AssignmentEdit, Browser, BrowserSettings,
-    ClearedSyncRequests, ConversionDraft, CountValue, Course, DueSettings, Error, GpaValue, Grade,
-    Health, HistoryRecord, Item, NewAssignment, NoteSettings, Run, RunDetail, Schedule,
-    ScheduleSettings, SourceStatus, StatusValue, SyncRequest, errors,
+    DESCRIPTION, DONE_STATUSES, TAGS, Action, AssignmentEdit, Browser, BrowserSettings,
+    ClearedSyncRequests, CommandRequest, CommandResult, ConversionDraft, CountValue, Course,
+    DueSettings, Error, GpaValue, Grade, Health, HistoryRecord, Item, NewAssignment, NoteSettings,
+    Run, RunDetail, Schedule, ScheduleSettings, SourceStatus, StatusValue, SyncRequest, errors,
 )
 
 app = FastAPI(
@@ -954,3 +954,196 @@ def delete_assignment(source: str = ITEM_SOURCE, item_id: str = ITEM_ID) -> Resp
         storage.delete_custom_item(conn, source, item_id)
         conn.commit()
     return Response(status_code=204)
+
+
+# Commands in words. Each applied command is an `actions` row holding the values it replaced,
+# so any of them can be undone later; an undo is an action too, so it can be undone (redo).
+
+def _changes(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, Any]]:
+    shown = lambda name, value: storage.local_iso(value) if name == "due_at" else value
+    return [{"field": k, "before": shown(k, before.get(k)), "after": shown(k, v)} for k, v in after.items()]
+
+
+def _unsaved(item: dict[str, Any], command: str, summary: str, notes: list[str],
+             changes: list[dict[str, Any]], undo_of: int | None = None,
+             kind: str = "command") -> dict[str, Any]:
+    """A command result that changed nothing: a dry run, or the item already was that way."""
+    return {"action_id": None, "kind": kind, "source": item["source"], "item_id": item["id"],
+            "title": item["title"], "command": command, "summary": summary, "notes": notes,
+            "changes": changes, "undo_of": undo_of, "undone_by": None, "created_at": None,
+            "item": item}
+
+
+# An action with its kind: an undo of an undo is a redo.
+ACTIONS_SQL = """SELECT a.*, CASE WHEN a.undo_of IS NULL THEN 'command'
+                    WHEN (SELECT b.undo_of FROM actions b WHERE b.action_id = a.undo_of) IS NULL THEN 'undo'
+                    ELSE 'redo' END AS kind FROM actions a"""
+
+
+def _action(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "action_id": row["action_id"], "kind": row["kind"], "source": row["source"], "item_id": row["id"],
+        "title": row["title"], "command": row["command"], "summary": row["summary"],
+        "notes": json.loads(row["notes"]),
+        "changes": _changes(json.loads(row["before"]), json.loads(row["after"])),
+        "undo_of": row["undo_of"], "undone_by": row["undone_by"], "created_at": row["created_at"],
+    }
+
+
+def _action_row(conn: sqlite3.Connection, action_id: int) -> sqlite3.Row:
+    row = conn.execute(f"{ACTIONS_SQL} WHERE a.action_id=?", (action_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "No command with that id")
+    return row
+
+
+def _command_result(conn: sqlite3.Connection, action_id: int) -> dict[str, Any]:
+    out = _action(_action_row(conn, action_id))
+    row = storage.get_item(conn, out["source"], out["item_id"])
+    return {**out, "item": row and storage.item_to_dict(row)}
+
+
+def _undo(conn: sqlite3.Connection, target: sqlite3.Row, command: str,
+          dry_run: bool) -> dict[str, Any]:
+    """Undo `target`: put back the values it replaced, logged as a new action."""
+    if target["undone_by"]:
+        raise HTTPException(409, f"That was already undone (command {target['undone_by']}).")
+    source, item_id = target["source"], target["id"]
+    item = storage.item_to_dict(_item_row(conn, source, item_id))
+    restore, expected = json.loads(target["before"]), json.loads(target["after"])
+    redo = target["undo_of"] is not None
+    said = _action_row(conn, target["undo_of"])["command"] if redo else target["command"]
+    if redo and command == "undo":  # the undo endpoint on an undo
+        command = "redo"
+    verb = "Redid" if redo else "Undid"
+    current = storage.item_fields(conn, source, item_id, restore)
+    if dry_run:
+        return _unsaved(item, command, f"Would {'redo' if redo else 'undo'} {commands.quote(said)}.",
+                        [], _changes(current, restore), undo_of=target["action_id"],
+                        kind="redo" if redo else "undo")
+    storage.apply_fields(conn, source, item_id, restore)
+    after = storage.item_to_dict(storage.get_item(conn, source, item_id))
+    now = datetime.now(LOCAL_TZ)
+    parts = []
+    if "due_at" in restore:
+        due = commands.when_text(commands.local(after["due_at"]), now)
+        parts.append(f"due date back to {commands.source_name(source)}'s, {due}"
+                     if restore["due_at"] is None and after["converted_from"] is None else f"due {due}")
+    if "note" in restore:
+        parts.append(f"note back to {commands.quote(restore['note'])}" if restore["note"] else "note removed")
+    if "status" in restore:
+        parts.append("marked done" if restore["status"] == "done" else "marked not done")
+    notes = ["It had been changed since, so that later change is replaced too."] if current != expected else []
+    action_id = storage.record_action(
+        conn, source, item_id, item["title"], command,
+        f"{verb} {commands.quote(said)}: {', '.join(parts)}.", notes, current, restore,
+        undo_of=target["action_id"])
+    conn.commit()
+    return _command_result(conn, action_id)
+
+
+@app.post("/extra/commands", dependencies=[Auth], tags=["extra"], operation_id="runCommand",
+          summary="Change an item with a command in words",
+          responses={**errors(401, 404, 409), 400: {"model": Error, "description":
+                     "The command wasn't understood (`detail` says what can be said), or no item "
+                     "was named."}})
+def run_command(body: CommandRequest) -> CommandResult:
+    """Runs a command such as `set the due date to today at 11:59 PM`, `due at 11:59`, `due oct
+    8 3 o'clock`, `push it back a day`, `note: bring a calculator` or `undo` on one item, and
+    says what it did. It's forgiving: what isn't said is kept from the item (a time alone keeps
+    the date, a date alone the time), a time without am/pm is read as a student would mean it,
+    and typos and spoken numbers are fine. `summary` and `notes` are written to show the person,
+    including how anything ambiguous was read. Every command can be undone, however old: `undo`
+    as a command undoes this item's latest, and `POST /extra/commands/{action_id}/undo` any one.
+    A command that changes nothing (it's already so) returns `action_id: null`. 400 when it
+    isn't understood, with what can be said; 409 when it can't apply (marking a scraped item
+    done: its platform decides that; moving a deadline it doesn't have)."""
+    command, url = body.command, body.url
+    if url and "##" in url:
+        url, _, spoken = url.partition("##")
+        command = command or spoken
+    if not command or not command.strip():
+        raise HTTPException(400, f"Say what to do, like {commands.EXAMPLES}.")
+    with storage.connect() as conn:
+        if url:
+            found = storage.find_item_by_url(conn, url)
+            if not found:
+                raise HTTPException(404, "No item has that link. It may not have been scraped yet.")
+            source, item_id = found
+        elif body.source and body.item_id:
+            source, item_id = body.source, body.item_id
+        else:
+            raise HTTPException(400, "Name the item: `source` and `item_id`, or `url`")
+        item = storage.item_to_dict(_item_row(conn, source, item_id))
+        usual = None
+        if item["due_at"] is None:  # a date said without a time then gets the course's usual time
+            usual = drafts.usual_time([storage.item_to_dict(r) for r in conn.execute(
+                "SELECT * FROM item_view WHERE source=? AND course_id IS ? AND active=1",
+                (source, item["course_id"]))])
+        now = datetime.now(LOCAL_TZ)
+        try:
+            plan = commands.interpret(command, item, now, usual)
+        except commands.CommandError as e:
+            raise HTTPException(e.status, e.message)
+        if plan in (commands.UNDO, commands.REDO):
+            undo = plan == commands.UNDO
+            target = conn.execute(
+                f"{ACTIONS_SQL} WHERE a.source=? AND a.id=? AND a.undone_by IS NULL AND a.undo_of IS "
+                f"{'NULL' if undo else 'NOT NULL'} ORDER BY a.action_id DESC LIMIT 1", (source, item_id)
+            ).fetchone()
+            if not target:
+                raise HTTPException(409, f"There's nothing to {'undo' if undo else 'redo'} on this item.")
+            return _undo(conn, target, command.strip(), body.dry_run)
+        before = storage.item_fields(conn, source, item_id, plan.changes)
+        if not plan.changes or body.dry_run:
+            summary = f"Would do this: {plan.summary}" if plan.changes else plan.summary
+            return _unsaved(item, command.strip(), summary, plan.notes, _changes(before, plan.changes))
+        storage.apply_fields(conn, source, item_id, plan.changes)
+        action_id = storage.record_action(conn, source, item_id, item["title"], command.strip(),
+                                          plan.summary, plan.notes, before, plan.changes)
+        conn.commit()
+        return _command_result(conn, action_id)
+
+
+@app.get("/extra/commands", dependencies=[Auth], tags=["extra"], operation_id="listCommands",
+         summary="List commands that ran", responses=READ_ERRORS)
+def list_commands(
+    source: str | None = _source_param(),
+    item_id: str | None = Query(None, description="Only those on this item (pair with `source`)."),
+    limit: int = Query(50, ge=1, le=500, description="How many to return."),
+    conn: sqlite3.Connection = Depends(db),
+) -> list[Action]:
+    """Commands that changed something, newest first, undos included. Any without `undone_by`
+    can still be undone."""
+    sql, args = f"{ACTIONS_SQL} WHERE 1=1", []
+    if source:
+        sql += " AND a.source=?"
+        args.append(source)
+    if item_id:
+        sql += " AND a.id=?"
+        args.append(item_id)
+    sql += " ORDER BY a.action_id DESC LIMIT ?"
+    args.append(limit)
+    return [_action(r) for r in conn.execute(sql, args)]
+
+
+COMMAND_ID = Path(description="`action_id` of a command.")
+
+
+@app.get("/extra/commands/{action_id}", dependencies=[Auth], tags=["extra"],
+         operation_id="getCommand", summary="Get one command and its item now",
+         responses=errors(401, 404, 503))
+def get_command(action_id: int = COMMAND_ID, conn: sqlite3.Connection = Depends(db)) -> CommandResult:
+    return _command_result(conn, action_id)
+
+
+@app.post("/extra/commands/{action_id}/undo", dependencies=[Auth], tags=["extra"],
+          operation_id="undoCommand", summary="Undo a command", responses=errors(401, 404, 409))
+def undo_command(action_id: int = COMMAND_ID,
+                 dry_run: bool = Query(False, description="Say what it would do without doing it.")
+                 ) -> CommandResult:
+    """Puts back what the command replaced, however long ago it ran, and returns the undo (an
+    action itself, so undoing it redoes the command). If the same fields changed since, those
+    later changes are replaced too, and `notes` says so. 409 if it was already undone."""
+    with storage.connect() as conn:
+        return _undo(conn, _action_row(conn, action_id), "undo", dry_run)

@@ -65,7 +65,11 @@ async function api(path, params = {}, { method = "GET", json } = {}) {
   const body = await res.json().catch(() => null);
   // 422s list their problems.
   const detail = Array.isArray(body?.detail) ? body.detail.map((d) => d.msg).join("; ") : body?.detail;
-  if (!res.ok) throw new Error(`${res.status}: ${detail ?? res.statusText} (${url})`);
+  if (!res.ok) {
+    const e = new Error(`${res.status}: ${detail ?? res.statusText} (${url})`);
+    e.status = res.status; e.detail = detail; // the API's own explanation, for showing as is
+    throw e;
+  }
   return body;
 }
 
@@ -92,7 +96,8 @@ function relative(iso) {
   const days = Math.round((startOf(d) - startOf(now)) / 86400000);
   if (days === 0) {
     const mins = Math.round((d - now) / 60000);
-    if (Math.abs(mins) < 60) return mins >= 0 ? `in ${mins} min` : `${-mins} min ago`;
+    if (mins === 0) return "just now";
+    if (Math.abs(mins) < 60) return mins > 0 ? `in ${mins} min` : `${-mins} min ago`;
     return `today ${time(d)}`;
   }
   if (days === 1) return `tomorrow ${time(d)}`;
@@ -411,7 +416,10 @@ async function viewItem(source, id) {
   const it = await api(`/items/${encodeURIComponent(source)}/${encodeURIComponent(id)}`);
   const custom = it.converted_from != null;
   const announcement = it.kind === "announcement";
-  const made = announcement ? await api("/extra/assignments", { source, announcement_id: id }).catch(() => []) : [];
+  const [made, actions] = await Promise.all([
+    announcement ? api("/extra/assignments", { source, announcement_id: id }).catch(() => []) : [],
+    api("/extra/commands", { source, item_id: id, limit: 10 }).catch(() => []),
+  ]);
   const fromHref = custom && `#/item/${encodeURIComponent(it.source)}/${encodeURIComponent(it.converted_from)}`;
   const theirs = it.user?.due_at && !custom
     ? h("small", {}, h("br"), `Your deadline. ${sourceName(it.source)} says `, it.source_due_at ? fullDate(it.source_due_at) : "none", ".")
@@ -440,6 +448,7 @@ async function viewItem(source, id) {
     ] : null,
     announcement ? null : dueForm(it),
     noteForm(it),
+    commandSection(it, actions),
     it.description ? [h("h2", {}, "Description"), text(it.description)] : null,
     it.attachments?.length ? [h("h2", {}, "Attachments"), attachments(it.attachments)] : null,
     it.extra?.submitted_work?.length ? [h("h2", {}, "Your submitted work"), attachments(it.extra.submitted_work)] : null,
@@ -742,6 +751,78 @@ async function viewStatus() {
     box];
 }
 
+// ---------- commands: <this site>/<item link>##<command>, or the box on an item page ----------
+
+// Splits "<link>##<command>" (or "<link>#<command>" when the command has a space or is one
+// word like "undo", since platform links don't end in such fragments) into [link, command].
+function splitCommand(raw) {
+  const decode = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
+  let i = raw.indexOf("##");
+  if (i >= 0) return [raw.slice(0, i), decode(raw.slice(i + 2)).trim()];
+  i = raw.indexOf("#");
+  if (i >= 0) {
+    const rest = decode(raw.slice(i + 1)).trim();
+    if (/\s/.test(rest) || /^(undo|redo|done|reset)$/i.test(rest)) return [raw.slice(0, i), rest];
+  }
+  return [raw, ""];
+}
+
+// Runs an item page's ?do=<command>, then swaps it in the address for ?did=<action> (or ?msg=,
+// or ?cmd_error=) so reloading or going back never runs it twice.
+async function runPending(path, params) {
+  const command = params.get("do");
+  params.delete("do");
+  const m = path.match(/^\/item\/([^/]+)\/([^/]+)$/);
+  try {
+    const r = await api("/extra/commands", {}, { method: "POST", json: {
+      source: decodeURIComponent(m[1]), item_id: decodeURIComponent(m[2]), command } });
+    if (r.action_id != null) params.set("did", r.action_id);
+    else params.set("msg", [r.summary, ...r.notes].join(" "));
+  } catch (e) {
+    params.set("cmd", command);
+    params.set("cmd_error", e.detail || e.message);
+  }
+  history.replaceState(null, "", "#" + path + "?" + params);
+}
+
+// Undoes a command (or redoes it, for an undo) and shows the result on its item's page.
+const undoButton = (a) => h("button", { onclick: async () => {
+  const r = await write(a.kind === "undo" ? "redo it" : "undo it", `/extra/commands/${a.action_id}/undo`, { method: "POST" });
+  if (r) location.hash = `#/item/${encodeURIComponent(r.source)}/${encodeURIComponent(r.item_id)}?did=${r.action_id}`;
+} }, a.kind === "undo" ? "Redo" : "Undo");
+
+// What the last command did (?did=), said (?msg=) or why it failed (?cmd_error=).
+async function commandBanner(params) {
+  if (params.get("did")) {
+    const a = await api(`/extra/commands/${encodeURIComponent(params.get("did"))}`).catch(() => null);
+    if (!a) return null;
+    return h("aside", { role: "status" }, h("p", {},
+      h("strong", {}, a.undone_by != null ? "Undone: " : "✓ "), a.summary, " ",
+      a.undone_by != null ? null : undoButton(a)),
+      a.notes.length ? h("p", {}, h("small", {}, a.notes.join(" "))) : null, h("hr"));
+  }
+  if (params.get("msg")) return h("aside", { role: "status" }, h("p", {}, params.get("msg")), h("hr"));
+  if (params.get("cmd_error")) {
+    return h("aside", { role: "alert" }, h("p", {}, h("strong", {}, `Couldn't do “${params.get("cmd")}”: `),
+      params.get("cmd_error")), h("hr"));
+  }
+  return null;
+}
+
+// The command box, the link form of it, and this item's past commands with Undo buttons.
+function commandSection(it, actions) {
+  const input = h("input", { size: 45, maxlength: 500, "aria-label": "Command",
+    placeholder: "due friday 5pm · push it back a day · note: … · undo" });
+  const here = `#/item/${encodeURIComponent(it.source)}/${encodeURIComponent(it.id)}`;
+  return [h("h2", {}, "Command"),
+    h("form", { onsubmit: (e) => { e.preventDefault(); if (input.value.trim()) location.hash = `${here}?do=${encodeURIComponent(input.value.trim())}`; } },
+      input, " ", h("button", {}, "Do it")),
+    it.url && it.converted_from == null ? h("p", {}, h("small", {}, "From anywhere: open ",
+      h("code", {}, `${location.host}/${it.url}##due friday 5pm`), " (the item's link after this site's address, then ## and the command).")) : null,
+    actions.length ? h("ul", {}, actions.map((a) => h("li", {}, when(a.created_at), ` — “${a.command}”: `, a.summary,
+      a.undone_by != null ? h("em", {}, " (undone)") : [" ", undoButton(a)]))) : null];
+}
+
 // ---------- link resolver: <this site>/<any source URL> → the matching page ----------
 
 // Google Classroom URLs carry IDs as base64 of the numeric ID we store.
@@ -836,15 +917,23 @@ function linkForm(value = "") {
 }
 
 async function viewOpen(params) {
-  const raw = params.get("url") || "";
+  const [raw, inline] = splitCommand(params.get("url") || "");
+  const command = params.get("do") || inline;
   const u = parseLink(raw);
   if (u) {
     const target = await resolveLink(u);
-    if (target) { location.replace(target); return "Opening…"; }
+    if (target) {
+      const join = target.includes("?") ? "&" : "?";
+      if (!command) location.replace(target);
+      else if (target.startsWith("#/item/")) location.replace(`${target}${join}do=${encodeURIComponent(command)}`);
+      else location.replace(`${target}${join}cmd=${encodeURIComponent(command)}&cmd_error=${encodeURIComponent("that item hasn't been scraped yet, so nothing was changed.")}`);
+      return "Opening…";
+    }
   }
   return [
     h("h1", {}, "Link not found"),
     h("p", {}, u ? ["lifeapi has nothing matching ", h("a", { href: u.href, target: "_blank" }, u.href), ". It may not have been scraped yet."] : `"${raw}" isn't a URL.`),
+    command ? h("p", {}, `So “${command}” wasn't done.`) : null,
     h("p", {}, "Try another link:"), linkForm(raw),
   ];
 }
@@ -868,10 +957,11 @@ const routes = [
 
 let seq = 0;
 async function route() {
-  // <this site>/<source URL>: everything after the first "/" (query and fragment included) is the link.
+  // <this site>/<source URL>[##command]: everything after the first "/" (query and fragment
+  // included) is the link, up to the command.
   if (location.pathname !== "/" && location.pathname !== "/index.html") {
-    const link = location.href.slice(location.origin.length + 1);
-    history.replaceState(null, "", "/#/open?url=" + encodeURIComponent(link));
+    const [link, command] = splitCommand(location.href.slice(location.origin.length + 1));
+    history.replaceState(null, "", "/#/open?url=" + encodeURIComponent(link) + (command ? "&do=" + encodeURIComponent(command) : ""));
   }
   const [path, query] = (location.hash.slice(1) || "/").split("?");
   const params = new URLSearchParams(query || "");
@@ -883,8 +973,9 @@ async function route() {
     if (!m) continue;
     try {
       const args = m.slice(1).map(decodeURIComponent);
-      const content = await view(...args, params);
-      if (mine === seq) main.replaceChildren(...[content].flat(Infinity).filter((x) => x != null && x !== false));
+      if (params.has("do") && view === viewItem) await runPending(path, params);
+      const [banner, content] = await Promise.all([commandBanner(params), view(...args, params)]);
+      if (mine === seq) main.replaceChildren(...[banner, content].flat(Infinity).filter((x) => x != null && x !== false));
     } catch (e) {
       if (mine === seq) main.replaceChildren(h("p", {}, h("strong", {}, "Couldn't load: "), e.message));
     }

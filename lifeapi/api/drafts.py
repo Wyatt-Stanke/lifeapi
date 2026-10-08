@@ -2,9 +2,9 @@
 
 No model and no network, so it's instant and says why it suggests what it does. Four steps:
 
-1. A temporal tagger finds every date and time in the text ("this Friday at 8am", "10/14",
-   "tomorrow", "end of next week", "in 3 days") and resolves each against when the
-   announcement was posted, not against today.
+1. The temporal tagger (`when.py`) finds every date and time in the text ("this Friday at
+   8am", "10/14", "tomorrow", "end of next week", "in 3 days") and resolves each against
+   when the announcement was posted, not against today.
 2. Each date is scored for how much it reads like a deadline from the words around it
    ("due", "by", "no later than", "moved to" score up; "last", "was due", a date before the
    post score down), and each sentence for how much it asks for work (assessment and work
@@ -28,28 +28,18 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import datetime
 from typing import Any, Iterable
 
 from ..scraper.dates import LOCAL_TZ
+from .when import CLASS_TIME_RE, DEFAULT_TIME, MONTHS, TIME_RE, WEEKDAYS, Mention, find_dates
 
 MAX_DRAFTS = 5
 MAX_RELATED = 3
 TITLE_MAX = 100
-DEFAULT_TIME = (23, 59)  # a date-only deadline, as the scrapers store one
 
 # -- vocabulary ---------------------------------------------------------------------------
 
-_WD = (r"(?:mon(?:day)?|tue(?:s(?:day)?)?|wed(?:s|nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?"
-       r"|sat(?:urday)?|sun(?:day)?)")
-_MON = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
-        r"|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)")
-_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-_MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
-# Abbreviations that are also ordinary words; only taken as dates when capitalised.
-_AMBIGUOUS = {"sat", "sun", "wed", "mon", "may", "mar"}
-_NUMBER_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-                 "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "fourteen": 14}
 
 _ASSESSMENT = (r"quiz(?:zes)?|tests?|exams?|midterms?|final\s+exams?|finals|assessments?|progress\s+checks?|psat"
                r"|retakes?|unit\s+tests?|frq|mcq|dbq|leq|saq")
@@ -81,320 +71,12 @@ _POINTS_RE = re.compile(r"\b(\d{1,4}(?:\.\d+)?)\s*-?\s*(?:points?|pts?)\b(?!\s*e
 _TOPIC_RE = re.compile(r"\b(unit|chapter|ch\.?|module|lesson|topic|section|part|week)\s*"
                        r"(\d+[a-z]?|[ivx]{1,4}\b)", re.I)
 
-# -- dates --------------------------------------------------------------------------------
-
-_DATE_RES = [
-    ("md", re.compile(rf"\b(?:(?P<wd>{_WD})\.?,?\s+)?(?P<mon>{_MON})\.?\s+(?P<day>\d{{1,2}})"
-                      rf"(?:st|nd|rd|th)?\b(?:,?\s+(?P<year>20\d\d)\b)?", re.I)),
-    ("dm", re.compile(rf"\b(?:(?P<wd>{_WD})\.?,?\s+)?(?:the\s+)?(?P<day>\d{{1,2}})(?:st|nd|rd|th)?"
-                      rf"\s+(?:of\s+)?(?P<mon>{_MON})\b\.?(?:,?\s+(?P<year>20\d\d)\b)?", re.I)),
-    ("num", re.compile(rf"\b(?:(?P<wd>{_WD})\.?,?\s+\(?)?(?<![\d/.])(?P<mon>\d{{1,2}})/(?P<day>\d{{1,2}})"
-                       rf"(?:/(?P<year>20\d\d|\d\d))?\b(?![/\d])(?!\s*(?:of|pages?|cups?)\b)", re.I)),
-    ("ord", re.compile(r"\bthe\s+(?P<day>\d{1,2})(?:st|nd|rd|th)\b(?!\s+(?:period|grade|block|hour|"
-                       r"question|problem|edition|chapter|step|paragraph|time|place)\b)", re.I)),
-    ("wd", re.compile(rf"\b(?:(?P<mod>this\s+coming|this|next|coming|last|the\s+following|following)"
-                      rf"\s+)?(?P<wd>{_WD})\b\.?(?:\s+(?P<week>next\s+week|this\s+week))?", re.I)),
-    ("rel", re.compile(r"""\b(?:
-        (?P<dat>(?:the\s+)?day\s+after\s+tomorrow)
-      | (?P<today>today|tonight|this\s+(?:morning|afternoon|evening))
-      | (?P<tmrw>tomorrow|tomorow|tommorow|tommorrow|tmrw|tmr)
-      | (?P<yest>yesterday)
-      | (?P<eonw>(?:the\s+)?end\s+of\s+next\s+week)
-      | (?P<eow>(?:the\s+)?end\s+of\s+(?:the|this)\s+week)
-      | (?P<wkend>(?:this|the|over\s+the)\s+weekend)
-      | (?P<nextwk>next\s+week)
-      | (?P<inn>in\s+(?P<n>\d{1,2}|an?|one|two|three|four|five|six|seven|eight|nine|ten|fourteen)
-               \s+(?P<unit>days?|weeks?))
-      | (?P<from>(?P<n2>an?|one|two|three|\d)\s+weeks?\s+from\s+(?:today|now))
-      | (?P<nextcls>(?:the\s+)?(?:(?:start|beginning)\s+of\s+)?(?:the\s+)?next\s+class
-               (?:\s+(?:period|meeting|session))?|next\s+time\s+(?:we|our\s+class)\s+meets?)
-      | (?P<eod>(?:the\s+)?end\s+of\s+(?:the\s+)?(?:day|today)|eod)
-      | (?P<eom>(?:the\s+)?end\s+of\s+(?:the|this)\s+month)
-    )\b""", re.I | re.X)),
-]
-_TIME_RE = re.compile(r"""\b(?:
-    (?P<h>\d{1,2})(?::(?P<mi>[0-5]\d))?\s*(?P<ap>[ap])\.?\s?m\b\.?
-  | (?P<word>noon|midday|midnight)
-  | (?P<h24>[01]?\d|2[0-3]):(?P<mi24>[0-5]\d)(?!\s*[ap]\.?\s?m\b)
-)""", re.I | re.X)
-# What may sit between a date and its time ("Friday at 8am", "8:00 AM on 10/14", "Fri (11:59pm)").
-_JOIN_RE = re.compile(r"^[\s,()\-–—@]*(?:(?:at|by|before|around|until|till|on|no\s+later\s+than)"
-                      r"[\s,()\-–—@]*)?$", re.I)
-_CLASS_TIME_RE = re.compile(r"\b(?:(?:start|beginning|end)\s+of\s+(?:the\s+)?(?:class|period|block)"
-                            r"|before\s+class|in\s+class)\b", re.I)
-
-
-@dataclass
-class Mention:
-    """A date or time found in the text, resolved against when it was posted."""
-
-    start: int
-    end: int
-    text: str
-    at: datetime
-    time: str  # where the time of day came from: "text", "course" or "default"
-    has_date: bool = True
-    vague: bool = False  # "next week": a day picked from a span
-    past: bool = False  # "last Friday", "yesterday"
-    score: float = 0.0  # how much it reads like a deadline
-
-    def out(self) -> dict[str, Any]:
-        return {"text": self.text, "start": self.start, "end": self.end,
-                "at": self.at.isoformat(), "time": self.time}
-
-
-@dataclass
-class _Part:
-    start: int
-    end: int
-    kind: str  # "date" or "time"
-    day: date | None = None
-    hm: tuple[int, int] | None = None
-    explicit: bool = False  # a calendar date, as opposed to a weekday or "tomorrow"
-    weak: bool = False  # a bare "3:00", only taken next to a date
-    vague: bool = False
-    past: bool = False
-    time_word: bool = False  # "tonight", "end of the day": the time is in the words
-
-
-def _wd_index(s: str) -> int:
-    return _WEEKDAYS.index(s[:3].lower())
-
-
-def _month_index(s: str) -> int:
-    return _MONTHS.index(s[:3].lower()) + 1
-
-
-def _ambiguous(word: str | None) -> bool:
-    """A lowercase "sat", "sun", "wed", "may"…, which is an ordinary word, not a date."""
-    return bool(word) and word.lower() in _AMBIGUOUS and word[0].islower()
-
-
-def _year_for(month: int, day: int, ref: date) -> date | None:
-    """The date nearest the post that `month`/`day` can mean: up to ~3 months before it
-    (an old deadline someone mentions), otherwise the next one."""
-    for year in (ref.year - 1, ref.year, ref.year + 1):
-        try:
-            d = date(year, month, day)
-        except ValueError:
-            continue
-        if d >= ref - timedelta(days=90):
-            return d
-    return None
-
-
-def _monday(d: date) -> date:
-    return d - timedelta(days=d.weekday())
-
-
-def _next_school_day(d: date) -> date:
-    d += timedelta(days=1)
-    while d.weekday() >= 5:
-        d += timedelta(days=1)
-    return d
-
-
-def _date_part(kind: str, m: re.Match, ref: date) -> _Part | None:
-    g = m.groupdict()
-    p = _Part(m.start(), m.end(), "date")
-    if kind in ("md", "dm", "num"):
-        if _ambiguous(g.get("wd")) or (kind != "num" and _ambiguous(g["mon"])):
-            return None
-        month = int(g["mon"]) if kind == "num" else _month_index(g["mon"])
-        day = int(g["day"])
-        year = g.get("year")
-        try:
-            if year:
-                p.day = date(int(year) + (2000 if len(year) == 2 else 0), month, day)
-            else:
-                p.day = _year_for(month, day, ref)
-        except ValueError:
-            return None
-        if p.day is None:
-            return None
-        p.explicit = True
-    elif kind == "ord":
-        day = int(g["day"])
-        d = ref.replace(day=1)
-        for _ in range(3):  # this month's, else the next month that has it
-            try:
-                if (c := d.replace(day=day)) >= ref:
-                    p.day = c
-                    break
-            except ValueError:
-                pass
-            d = (d + timedelta(days=32)).replace(day=1)
-        if p.day is None:
-            return None
-    elif kind == "wd":
-        if _ambiguous(g["wd"]):
-            return None
-        wd = _wd_index(g["wd"])
-        mod = (g["mod"] or "").lower().split()
-        week = (g["week"] or "").lower()
-        ahead = (wd - ref.weekday()) % 7
-        if week.startswith("next") or mod == ["next"]:
-            p.day = _monday(ref) + timedelta(days=7 + wd)
-        elif week.startswith("this"):
-            p.day = _monday(ref) + timedelta(days=wd)
-        elif mod == ["last"]:
-            p.day = ref - timedelta(days=(ref.weekday() - wd) % 7 or 7)
-            p.past = True
-        elif "following" in mod:
-            p.day = ref + timedelta(days=(ahead or 7) + 7)
-        elif mod == ["this"]:
-            p.day = ref + timedelta(days=ahead)
-        else:  # "Friday", "coming Friday": the next one (a week ahead if that's today)
-            p.day = ref + timedelta(days=ahead or 7)
-    else:  # rel
-        word = next(k for k in ("dat", "today", "tmrw", "yest", "eonw", "eow", "wkend", "nextwk",
-                                "inn", "from", "nextcls", "eod", "eom") if g[k])
-        if word == "dat":
-            p.day = ref + timedelta(days=2)
-        elif word == "today":
-            p.day = ref
-            p.time_word = g["today"].lower() == "tonight"
-        elif word == "tmrw":
-            p.day = ref + timedelta(days=1)
-        elif word == "yest":
-            p.day, p.past = ref - timedelta(days=1), True
-        elif word == "eow":
-            friday = _monday(ref) + timedelta(days=4)
-            p.day = friday if friday >= ref else friday + timedelta(days=7)
-        elif word == "eonw":
-            p.day = _monday(ref) + timedelta(days=11)
-        elif word == "wkend":
-            p.day = ref + timedelta(days=(6 - ref.weekday()) % 7)
-        elif word == "nextwk":
-            p.day, p.vague = _monday(ref) + timedelta(days=7), True
-        elif word in ("inn", "from"):
-            raw = (g["n"] or g["n2"]).lower()
-            n = int(raw) if raw.isdigit() else _NUMBER_WORDS[raw]
-            weeks = word == "from" or g["unit"].lower().startswith("week")
-            p.day = ref + timedelta(days=n * (7 if weeks else 1))
-        elif word == "nextcls":
-            p.day = _next_school_day(ref)
-        elif word == "eod":
-            p.day, p.time_word = ref, True
-        else:  # eom
-            p.day = (ref.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-    return p
-
-
-def _time_part(m: re.Match) -> _Part:
-    g = m.groupdict()
-    p = _Part(m.start(), m.end(), "time")
-    if g["word"]:
-        p.hm = (12, 0) if g["word"].lower() in ("noon", "midday") else (23, 59)
-    elif g["h"]:
-        h = int(g["h"]) % 12 + (12 if g["ap"].lower() == "p" else 0)
-        p.hm = (h, int(g["mi"] or 0))
-    else:
-        h = int(g["h24"])
-        if 1 <= h <= 6:  # "at 3:00" in a school context is the afternoon
-            h += 12
-        p.hm, p.weak = (h, int(g["mi24"])), True
-    if p.hm[0] > 23:
-        p.hm = None
-    return p
-
-
-def _keep_longest(parts: list[_Part]) -> list[_Part]:
-    kept: list[_Part] = []
-    for p in sorted(parts, key=lambda p: (-(p.end - p.start), p.start)):
-        if all(p.end <= k.start or p.start >= k.end for k in kept):
-            kept.append(p)
-    return sorted(kept, key=lambda p: p.start)
-
-
-def find_dates(text: str, ref: datetime, usual: tuple[int, int] | None = None) -> list[Mention]:
-    """Every date and time in `text`, resolved against `ref` (when it was posted). A date
-    written without a time gets `usual` (the course's usual due time), else 23:59."""
-    ref_day = ref.date()
-    dates = []
-    for kind, rx in _DATE_RES:
-        for m in rx.finditer(text):
-            if p := _date_part(kind, m, ref_day):
-                dates.append(p)
-    dates = _keep_longest(dates)
-    times = _keep_longest([p for m in _TIME_RE.finditer(text) if (p := _time_part(m)).hm])
-    times = [t for t in times if all(t.end <= d.start or t.start >= d.end for d in dates)]
-
-    # "Friday (10/14)": a weekday next to a calendar date is one date.
-    merged: list[_Part] = []
-    for d in dates:
-        prev = merged[-1] if merged else None
-        if prev and re.fullmatch(r"[\s,()]*", text[prev.end:d.start]) and prev.explicit != d.explicit:
-            prev.day = prev.day if prev.explicit else d.day
-            prev.explicit = True
-            prev.end = d.end
-            continue
-        merged.append(d)
-
-    out: list[Mention] = []
-    used: set[int] = set()
-    for d in merged:
-        t = next((t for i, t in enumerate(times) if i not in used and (
-            (0 <= t.start - d.end <= 20 and _JOIN_RE.match(text[d.end:t.start]))
-            or (0 <= d.start - t.end <= 20 and _JOIN_RE.match(text[t.end:d.start])))), None)
-        start, end = d.start, d.end
-        if t is not None:
-            used.add(times.index(t))
-            start, end = min(start, t.start), max(end, t.end)
-            hm, source = t.hm, "text"
-        elif d.time_word:
-            hm, source = DEFAULT_TIME, "text"
-        elif usual:
-            hm, source = usual, "course"
-        else:
-            hm, source = DEFAULT_TIME, "default"
-        start, end = _trim(text, start, end)
-        out.append(Mention(start, end, text[start:end], _at(d.day, hm), source,
-                           vague=d.vague, past=d.past))
-    for i, t in enumerate(times):
-        if i in used or t.weak:
-            continue
-        line = (text.rfind("\n", 0, t.start), text.find("\n", t.end) % (len(text) + 1))
-        same = [m for m in out if line[0] < m.start and m.end <= line[1] and m.time != "text"]
-        if len(same) == 1:  # "- Fri: lab report due by 11:59pm": the time of that line's date
-            m = same[0]
-            m.at, m.time = m.at.replace(hour=t.hm[0], minute=t.hm[1]), "text"
-            continue
-        # "submit by 3pm": the day it was posted, or the next
-        at = _at(ref_day, t.hm)
-        if at < ref:
-            at += timedelta(days=1)
-        start, end = _trim(text, t.start, t.end)
-        out.append(Mention(start, end, text[start:end], at, "text", has_date=False))
-    return sorted(out, key=lambda m: m.start)
-
-
-def _trim(text: str, start: int, end: int) -> tuple[int, int]:
-    """A mention's span without stray punctuation: a closing parenthesis it opened is taken
-    in, a sentence's full stop left out ("Friday." -> "Friday", but "8 a.m." stays)."""
-    if text[start:end].count("(") > text[start:end].count(")") and text[end:end + 1] == ")":
-        end += 1
-    while start < end and text[start] in " ,":
-        start += 1
-    while end > start and text[end - 1] in " ,":
-        end -= 1
-    if text[end - 1:end] == "." and not re.search(r"[ap]\.m\.$", text[start:end], re.I):
-        end -= 1
-    if text[start:start + 1] == "(" and text[end - 1:end] == ")":
-        start, end = start + 1, end - 1
-    return start, end
-
-
-def _at(d: date, hm: tuple[int, int]) -> datetime:
-    return datetime.combine(d, time(*hm), tzinfo=LOCAL_TZ)
-
-
 # -- sentences ----------------------------------------------------------------------------
 
 _ABBREVIATIONS = {"p", "pg", "pgs", "pp", "ch", "chap", "no", "nos", "vol", "mr", "mrs", "ms",
                   "dr", "st", "eg", "ie", "etc", "vs", "approx", "a.m", "p.m", "am", "pm", "sec",
                   "fig", "ex", "q", "pt", "pts", "min", "hr", "hrs", "e.g", "i.e", "u.s"}
-_ABBREVIATIONS |= set(_MONTHS) | {"sept"} | set(_WEEKDAYS) | {"tues", "thur", "thurs", "weds"}
+_ABBREVIATIONS |= set(MONTHS) | {"sept"} | set(WEEKDAYS) | {"tues", "thur", "thurs", "weds"}
 _BOUNDARY_RE = re.compile(r"[.!?]+[\"')\]]*\s+(?=[\"'(\[]?[A-Z0-9])")
 
 
@@ -552,7 +234,7 @@ def _clean(s: str) -> str:
 _TITLE_CUTS = [re.compile(p, re.I) for p in (
     r"\s*\(\s*\d+(?:\.\d+)?\s*(?:points?|pts?)\s*\)",
     r",?\s*(?:worth|for|out\s+of)\s+\d+(?:\.\d+)?\s*(?:points?|pts?)\b",
-    _CLASS_TIME_RE.pattern,
+    CLASS_TIME_RE.pattern,
     r"\s+(?:deadline|due\s+date)?\s*(?:has|have)?\s*(?:been|was|were|is|are|got|will\s+be)\s+"
     r"(?:extended|moved|pushed(?:\s+back)?|postponed|rescheduled|changed|delayed)\b.*$",
     r"\s+(?:deadline|due\s+date)$",
@@ -585,7 +267,7 @@ def _title(text: str, sent: tuple[int, int], mentions: list[Mention], due: Menti
         else:
             s = re.sub(r"^\W+", "", tail)
     s = _first_sentence(s.replace("\x00", " "))
-    for t in reversed(list(_TIME_RE.finditer(s))):  # a time that went with a date elsewhere
+    for t in reversed(list(TIME_RE.finditer(s))):  # a time that went with a date elsewhere
         head = s[:t.start()]
         s = head[:_CUE_BEFORE_RE.search(head).start()] + " " + s[t.end():]
     s = re.split(r"\s+[-–—]\s+(?=[A-Z])|\s+(?:and|but|so)\s+(?:must|should|will|is|are|it|this)\b", s)[0]
