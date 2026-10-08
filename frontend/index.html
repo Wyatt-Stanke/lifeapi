@@ -139,6 +139,7 @@ function itemLine(it, { showDue = true, showCourse = true } = {}) {
   if (score(it)) bits.push(score(it));
   if (it.converted_from) bits.push("from an announcement");
   if (it.user?.due_at && it.source_due_at) bits.push(h("span", { title: `${sourceName(it.source)} says ${fullDate(it.source_due_at)}` }, "your deadline"));
+  if (it.user?.status && it.status === it.user.status) bits.push(h("span", { title: `${sourceName(it.source)} says ${label(it.source_status) || "nothing"}` }, "your status"));
   if (it.user?.note) bits.push(h("span", { title: it.user.note }, "note"));
   const sep = bits.flatMap((b, i) => (i ? [" · ", b] : [b]));
   return h("li", {},
@@ -429,7 +430,9 @@ async function viewItem(source, id) {
     ["Posted by", it.author],
     ["Posted", it.posted_at && [fullDate(it.posted_at), " (", relative(it.posted_at), ")"]],
     ["Due", it.due_at ? [fullDate(it.due_at), " (", relative(it.due_at), ")", theirs] : it.due_text],
-    ["Status", label(it.status)],
+    ["Status", it.user?.status && it.status === it.user.status
+      ? [label(it.status), h("small", {}, h("br"), `${sourceName(it.source)} says ${label(it.source_status) || "nothing"}.`)]
+      : label(it.status)],
     ["Points", score(it)],
     ["Archived", it.active === false ? "Yes — no longer seen in the source" : null],
   ].filter(([, v]) => v && (!Array.isArray(v) || v.length));
@@ -439,6 +442,7 @@ async function viewItem(source, id) {
     h("h1", {}, it.title),
     it.url ? h("p", {}, h("a", { href: it.url, target: "_blank" }, `Open ${custom ? "the announcement" : ""} in ${sourceName(it.source)} ↗`)) : null,
     h("table", {}, facts.map(([k, v]) => h("tr", {}, h("th", { align: "left" }, k), h("td", {}, v)))),
+    announcement || it.kind === "material" ? null : statusButton(it),
     custom ? customControls(it) : null,
     announcement ? [
       made.length ? h("p", {}, "Made from this: ", made.flatMap((x, i) => [i ? ", " : "", h("a", { href: itemHref(x) }, x.title)])) : null,
@@ -454,6 +458,14 @@ async function viewItem(source, id) {
       h("strong", {}, c.author || "?"), c.private ? " (private)" : "", c.posted_at ? ` · ${c.posted_at}` : "", ": ", c.text)))] : null,
     h("details", {}, h("summary", {}, "All data"), h("pre", {}, JSON.stringify(it, null, 2))),
   ];
+}
+
+// Marks an item turned in or not, in lifeapi only, as an undoable command.
+function statusButton(it) {
+  const done = DONE.has(it.status);
+  const go = (command) => { location.hash = `${itemHref(it)}?do=${encodeURIComponent(command)}`; };
+  return h("p", {}, h("button", { onclick: () => go(done ? "not done" : "done") },
+    it.converted_from != null ? (done ? "Mark not done" : "Mark done") : (done ? "Mark not turned in" : "Mark turned in")));
 }
 
 // The student's own deadline for an item, kept in lifeapi only.
@@ -479,9 +491,8 @@ function noteForm(it) {
         it.user?.note ? h("button", { type: "button", onclick: () => send({ method: "DELETE" }) }, "Delete note") : null))];
 }
 
-// Done / edit / delete for an assignment made from an announcement.
+// Edit / delete for an assignment made from an announcement.
 function customControls(it) {
-  const done = DONE.has(it.status);
   const send = async (json) => { if (await write("update the assignment", customPath(it), { method: "PATCH", json })) route(); };
   const title = h("input", { size: 60, required: true, maxlength: 300, value: it.title });
   const kind = h("select", {}, ["assignment", "quiz"].map((k) => h("option", { value: k, selected: k === it.kind }, label(k))));
@@ -489,7 +500,6 @@ function customControls(it) {
   const description = h("textarea", { rows: 6, cols: 70 }, it.description || "");
   return [
     h("p", {},
-      h("button", { onclick: () => send({ status: done ? "assigned" : "done" }) }, done ? "Mark not done" : "Mark done"), " ",
       h("button", { onclick: async () => {
         if (!confirm(`Delete “${it.title}”? The announcement stays.`)) return;
         if (await write("delete the assignment", customPath(it), { method: "DELETE" }) !== undefined) {

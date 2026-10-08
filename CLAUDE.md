@@ -11,8 +11,8 @@ separate schedules. They share only `lifeapi/models.py` (pydantic models) and
 scraper with `--due` every minute, and it fetches the sources that are due on their
 schedules (see "Schedules" below). The API stays up. Its only writes are queueing manual
 sync requests (`POST /sync`) and setting schedules and browser settings, all of which the
-scraper picks up, and the student's own additions (notes, changed deadlines, assignments
-made from announcements, commands; see "The student's additions"), which the scraper never
+scraper picks up, and the student's own additions (notes, changed deadlines and statuses,
+assignments made from announcements, commands; see "The student's additions"), which the scraper never
 touches.
 
 ## Commands
@@ -208,17 +208,18 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   time zones) is `DESCRIPTION` in `api/schemas.py`. Field docs are the `Field(description=)`s
   in `models.py`. Response models are in `api/schemas.py`; they're validated on output, so a
   stored row that no longer fits its model becomes a 500. When you add a source, status,
-  `extra` key or endpoint, update those docs. `DONE_STATUSES` there is the finished-status
-  list that `/items/upcoming` uses.
+  `extra` key or endpoint, update those docs. `DONE_STATUSES` (in `models.py`, re-exported
+  there) is the finished-status list that `/items/upcoming` and `item_view` use.
 
 ### The student's additions
 
 The API writes these, in tables the scraper never reads or writes, so a scrape (including
 `save_result`'s soft delete) can't overwrite them:
 
-- `item_marks` (`source`, `id`, `note`, `due_at` UTC): a note and/or the student's own
-  deadline on any item, scraped or custom. `storage.set_mark` deletes a row once both are
-  null.
+- `item_marks` (`source`, `id`, `note`, `due_at` UTC, `status`): a note and/or the student's
+  own deadline on any item, scraped or custom, and on scraped items their own status
+  (`turned_in` or `assigned`; custom items keep theirs in `custom_items`). `storage.set_mark`
+  deletes a row once all three are null.
 - `custom_items`: assignments made from an announcement (`POST /extra/assignments`), in the
   announcement's source and course (`from_id`), served with id `lifeapi-<custom_id>`
   (`storage.CUSTOM_PREFIX`). `data` is the Item JSON with `due_at` null: their deadline is an
@@ -228,14 +229,17 @@ The API writes these, in tables the scraper never reads or writes, so a scrape (
   `custom_items`, LEFT JOIN `item_marks`. Its `due_at` is the effective deadline
   (`COALESCE(mark, source's)`), so every filter, sort and count (`_due_sql`, `_missing_sql`,
   `/items`) uses the student's deadline without special cases, and `source_due_at` is the
-  source's. API item queries must use `item_view`, never `items`, and `storage.item_to_dict`
-  to build the response (it adds `source_due_at`, `converted_from` and `user`). `_migrate`
+  source's. Its `status` is the mark's while the mark and the source's disagree on whether
+  the item is finished (`DONE_STATUSES`), else the source's, so a `turned_in` mark doesn't
+  hide a later `graded`; `source_status` is the source's. API item queries must use
+  `item_view`, never `items`, and `storage.item_to_dict` to build the response (it adds
+  `source_due_at`, `source_status`, `converted_from` and `user`). `_migrate`
   recreates the view whenever `ITEM_VIEW`'s text changes, so edit it there. The scraper's
   `_previous_items` reads `items` directly, so its cache never sees marks.
 
 - `actions`: every command that changed something (`POST /extra/commands`), with `before`
-  and `after` JSON of the fields it touched (`due_at` as item_marks stores it, so null means
-  the source's; `note`; `status`). Undoing applies `before` and is logged as an action with
+  and `after` JSON of the fields it touched (`due_at` and `status` as item_marks stores them,
+  so null means the source's; `note`; a custom item's `status`). Undoing applies `before` and is logged as an action with
   `undo_of`; `storage.record_action` keeps `undone_by` meaning "not in effect" down a
   redo chain (undoing an undo clears its target's `undone_by`). Any action can be undone
   however old; if its fields changed since, the later change is overwritten and the undo's
@@ -275,8 +279,10 @@ the drafts before and after; it has many interacting heuristics.
 returns a `Plan` (field changes, a `summary` sentence for the person, `notes` on how anything
 ambiguous was read) or UNDO/REDO, which the API resolves to the item's latest action in
 effect (undo) or latest undo in effect (redo). Matching order matters: undo/redo, note
-commands (before dates, so a note's text is never read as one), done/not done (custom items
-only; 409 for scraped ones), reset/remove the due date, shifts by an amount ("push it back a
+commands (before dates, so a note's text is never read as one), done/not done
+(`status_plan`, shared with `PUT /items/{source}/{item_id}/status`: a scraped item gets a
+`turned_in`/`assigned` mark only while its source disagrees, and the mark is cleared when
+marked the source's way; 409 for announcements and materials), reset/remove the due date, shifts by an amount ("push it back a
 day"; "in 3 days" is a date, not a shift), then a date/time. What isn't said is kept from the
 item: a time alone keeps its date, a date alone its time. A time without am/pm (`_pick_half`):
 1-6 and :59 are PM, 12 is noon, 7-11 whichever is nearer the item's current due time. A
@@ -389,7 +395,8 @@ restores the default. The explorer edits it in the Sync status page's Browser co
 A temporary, deliberately unstyled explorer: plain semantic HTML, no CSS, no build step.
 It's a user-facing wrapper (Today, Upcoming, Missing, Announcements, Courses, Grades,
 Search, Sync status with sync buttons and schedule and browser editors; item pages with a
-note box and deadline editor; "Convert to assignment" on announcements, a form filled from
+note box, deadline editor and a "Mark turned in" button, which runs the `done`/`not done`
+command so it's undoable; "Convert to assignment" on announcements, a form filled from
 `/extra/drafts`), not an endpoint browser. Raw
 API access stays at `/api/docs`.
 

@@ -23,7 +23,7 @@ from typing import Any, Collection, Iterator
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from . import config
-from .models import Course, Grade, Item, ScrapeResult
+from .models import DONE_STATUSES, Course, Grade, Item, ScrapeResult
 from .scraper.dates import LOCAL_TZ
 
 SCHEMA = """
@@ -128,12 +128,15 @@ CREATE TABLE IF NOT EXISTS browser_settings (
 );
 -- What the student adds to an item through the API, keyed like the item (scraped or made
 -- in lifeapi). `due_at` (UTC) replaces the source's deadline wherever the API reports or
--- filters on one; the source's own stays in `items`. A row with neither is deleted.
+-- filters on one; the source's own stays in `items`. `status` (`turned_in` or `assigned`, on
+-- scraped items only) does the same for the source's status, while the two disagree on
+-- whether it's finished. A row with none of the three is deleted.
 CREATE TABLE IF NOT EXISTS item_marks (
     source TEXT NOT NULL,
     id TEXT NOT NULL,
     note TEXT,
     due_at TEXT,
+    status TEXT,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (source, id)
 );
@@ -177,14 +180,21 @@ CREATE INDEX IF NOT EXISTS actions_item ON actions (source, id, action_id);
 
 CUSTOM_PREFIX = "lifeapi-"
 
+_DONE_SQL = "(" + ", ".join(f"'{s}'" for s in DONE_STATUSES) + ")"
+
 # Items as the API serves them: scraped items and custom ones, with item_marks applied.
 # `due_at` is the effective deadline (the student's if set) and `source_due_at` the
-# source's. Recreated by `_migrate` whenever this text changes.
+# source's. `status` is the student's while it disagrees with the source's on whether the
+# item is finished, else the source's (so a later `graded` shows through a `turned_in` mark).
+# Recreated by `_migrate` whenever this text changes.
 ITEM_VIEW = f"""CREATE VIEW item_view AS
-SELECT b.source, b.id, b.kind, b.course_id, b.course_name, b.title, b.status,
+SELECT b.source, b.id, b.kind, b.course_id, b.course_name, b.title,
+       CASE WHEN m.status IS NULL
+                 OR (m.status IN {_DONE_SQL}) = (COALESCE(b.status, '') IN {_DONE_SQL})
+            THEN b.status ELSE m.status END AS status, b.status AS source_status,
        COALESCE(m.due_at, b.source_due_at) AS due_at, b.source_due_at, b.posted_at, b.data,
        b.active, b.first_seen_at, b.last_seen_at, b.converted_from,
-       m.note, m.due_at AS user_due_at, m.updated_at AS user_updated_at
+       m.note, m.due_at AS user_due_at, m.status AS user_status, m.updated_at AS user_updated_at
 FROM (
     SELECT source, id, kind, course_id, course_name, title, status, due_at AS source_due_at,
            posted_at, data, active, first_seen_at, last_seen_at, NULL AS converted_from
@@ -239,6 +249,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for name in ("log", "partial", "failure"):
         if name not in columns:
             conn.execute(f"ALTER TABLE scrape_runs ADD COLUMN {name} TEXT")
+    if "status" not in {r[1] for r in conn.execute("PRAGMA table_info(item_marks)")}:
+        conn.execute("ALTER TABLE item_marks ADD COLUMN status TEXT")
     view = conn.execute("SELECT sql FROM sqlite_master WHERE type='view' AND name='item_view'").fetchone()
     if view is None or view[0] != ITEM_VIEW:
         conn.execute("DROP VIEW IF EXISTS item_view")
@@ -629,9 +641,11 @@ def item_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     data["source_due_at"] = data.get("due_at")
     if row["user_due_at"]:
         data["due_at"] = local_iso(row["user_due_at"])
+    data["source_status"] = None if row["converted_from"] else row["source_status"]
+    data["status"] = row["status"]
     data["converted_from"] = row["converted_from"]
     data["user"] = None if row["user_updated_at"] is None else {
-        "note": row["note"], "due_at": local_iso(row["user_due_at"]),
+        "note": row["note"], "due_at": local_iso(row["user_due_at"]), "status": row["user_status"],
         "updated_at": row["user_updated_at"],
     }
     return data
@@ -695,15 +709,16 @@ def find_item_by_url(conn: sqlite3.Connection, url: str) -> tuple[str, str] | No
 
 
 def set_mark(conn: sqlite3.Connection, source: str, id_: str, **fields: str | None) -> None:
-    """Set `note` and/or `due_at` (UTC ISO) on an item; None clears one. Doesn't commit."""
+    """Set `note`, `due_at` (UTC ISO) and/or `status` on an item; None clears one. Doesn't
+    commit."""
     conn.execute("INSERT INTO item_marks (source, id, updated_at) VALUES (?, ?, ?) "
                  "ON CONFLICT (source, id) DO NOTHING", (source, id_, now_iso()))
     for name, value in fields.items():
-        assert name in ("note", "due_at"), name
+        assert name in ("note", "due_at", "status"), name
         conn.execute(f"UPDATE item_marks SET {name}=?, updated_at=? WHERE source=? AND id=?",
                      (value, now_iso(), source, id_))
-    conn.execute("DELETE FROM item_marks WHERE source=? AND id=? AND note IS NULL AND due_at IS NULL",
-                 (source, id_))
+    conn.execute("DELETE FROM item_marks WHERE source=? AND id=? AND note IS NULL AND due_at IS NULL "
+                 "AND status IS NULL", (source, id_))
 
 
 def custom_id(item_id: str) -> int | None:
@@ -738,13 +753,13 @@ ACTION_FIELDS = ("due_at", "note", "status")
 
 
 def item_fields(conn: sqlite3.Connection, source: str, id_: str, names: Collection[str]) -> dict[str, Any]:
-    """The stored values an action can change: `due_at` and `note` from item_marks (so a
-    `due_at` of None means the source's deadline), `status` of a custom item."""
-    mark = conn.execute("SELECT note, due_at FROM item_marks WHERE source=? AND id=?",
+    """The stored values an action can change, from item_marks (so a `due_at` or `status` of
+    None means the source's), except a custom item's `status`, which is its own."""
+    mark = conn.execute("SELECT note, due_at, status FROM item_marks WHERE source=? AND id=?",
                         (source, id_)).fetchone()
     out: dict[str, Any] = {}
     for name in names:
-        if name == "status":
+        if name == "status" and custom_id(id_) is not None:
             row = conn.execute("SELECT status FROM custom_items WHERE custom_id=?", (custom_id(id_),)).fetchone()
             out[name] = row["status"] if row else None
         else:
@@ -754,10 +769,11 @@ def item_fields(conn: sqlite3.Connection, source: str, id_: str, names: Collecti
 
 def apply_fields(conn: sqlite3.Connection, source: str, id_: str, values: dict[str, Any]) -> None:
     """Set the fields `item_fields` reads. Doesn't commit."""
-    marks = {k: v for k, v in values.items() if k in ("due_at", "note")}
+    custom = custom_id(id_) is not None
+    marks = {k: v for k, v in values.items() if k in ("due_at", "note") or (k == "status" and not custom)}
     if marks:
         set_mark(conn, source, id_, **marks)
-    if "status" in values:
+    if "status" in values and custom:
         row = conn.execute("SELECT data FROM custom_items WHERE custom_id=?", (custom_id(id_),)).fetchone()
         item = Item.model_validate_json(row["data"])
         item.status = values["status"]
