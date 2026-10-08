@@ -34,6 +34,12 @@ def timeout(ms: int) -> int:
     """A wait deadline in ms, scaled by LIFEAPI_TIMEOUT_SCALE."""
     return int(ms * TIMEOUT_SCALE)
 
+# The longest one source's scrape may take, in seconds (not scaled by TIMEOUT_SCALE). A run
+# that's still going after this is stopped and recorded as failed, with its trail, so one
+# hung page can't hold up every other source. A full Google Classroom re-read, the slowest,
+# has taken about 16 minutes on the server.
+SOURCE_TIMEOUT = int(os.getenv("LIFEAPI_SOURCE_TIMEOUT", "1800"))
+
 # How often a source is fetched (in full) when no schedule has been set for it through the
 # API (`PUT /sources/{source}/schedule`). The variable is in seconds. The scraper's `--due`
 # runs follow it, and the API reports it, so both need the same value.

@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import AsyncIterator, Callable
 
-from patchright.async_api import BrowserContext, ElementHandle, Locator, Page, async_playwright
+from patchright.async_api import BrowserContext, ElementHandle, Locator, Page, Route, async_playwright
 from patchright.async_api import Error as PlaywrightError
 from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 
@@ -63,10 +63,31 @@ async def browser_context(
             ],
         )
         ctx.set_default_timeout(config.timeout(30_000))
+        # patchright intercepts every request (Fetch.enable) and, with no routes, continues
+        # each one at once. Chrome 155 then often finds a request ID already in use, takes
+        # it for a misbehaving renderer ("DevTools: Duplicate request ID") and restarts its
+        # network service, which cancels every request in flight in every tab, every 10 to
+        # 30 s. With any route, each request comes here first and nothing restarts (0 in
+        # 400 s on the server, against about 2 a minute without). Routing turns off the HTTP
+        # cache, as it does in Playwright.
+        await ctx.route("**/*", _continue)
         try:
             yield ctx
         finally:
-            await ctx.close()
+            # A source stopped for running too long (runner._scrape) can leave a hung tab
+            # that blocks a clean close. Leaving async_playwright() then stops the driver,
+            # which kills Chrome.
+            try:
+                await asyncio.wait_for(ctx.close(), config.timeout(20_000) / 1000)
+            except asyncio.TimeoutError:
+                log.warning("Chrome didn't close cleanly; stopping it")
+
+
+async def _continue(route: Route) -> None:
+    try:
+        await route.continue_()
+    except PlaywrightError:  # the tab or request went away while it waited
+        pass
 
 
 def _no_display() -> bool:
