@@ -108,7 +108,10 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   its session's expiry itself and can send a reused session to the College Board sign-in
   even after it has fetched the profile, so `_load_app` waits for it to settle on
   `/subjects` (signing in again, up to `MAX_SIGN_INS`) and keeps only the profile fetched
-  after the last sign-in. A 401 (expired token: the API answers 422 for a malformed one)
+  after the last sign-in. Logging out, the app sometimes ends on `myap.collegeboard.org/login`
+  instead: a Student/Educator chooser that never redirects, whose Student link signs in to
+  AP Students. `_load_app` goes from there to `SIGN_IN`, the sign-in the app normally
+  redirects to. A 401 (expired token: the API answers 422 for a malformed one)
   loads the app again once for a fresh token.
 - **Infinite Campus**: after SSO, calls `/campus/resources/portal/grades` and
   `/grades/detail/<sectionID>` with `page.request`, plus `/campus/api/campus/grading/gpas/my/gpa`

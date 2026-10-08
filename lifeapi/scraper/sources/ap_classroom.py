@@ -19,16 +19,21 @@ from typing import Any
 
 from patchright.async_api import Error as PlaywrightError
 from patchright.async_api import Page, Response
+from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from ... import config
 from ...models import Course, Item, ItemKind, ScrapeResult
-from ..auth.collegeboard import collegeboard_login, is_collegeboard_login_url, on_collegeboard_login
+from ..auth.collegeboard import (collegeboard_login, is_collegeboard_login_url, is_myap_login_url,
+                                 on_collegeboard_login)
 from ..auth.google import LoginError
 from ..base import SiteUnavailable, Source, register
 from ..browser import dump_debug, wait_for_url
 from ..dates import now
+from ..trail import redact
 
 BASE = "https://apclassroom.collegeboard.org"
+# The College Board sign-in the app itself redirects to when signed out; it returns to the app.
+SIGN_IN = f"https://account.collegeboard.org/login/login?DURL={BASE}/"
 ASSIGNMENTS = "/fym/assessments/api/chameleon/student_assignments"
 STATUSES = ("assigned", "upcoming", "completed")
 # How often one load of the app may send us to the College Board sign-in. On the server it
@@ -120,11 +125,24 @@ class APClassroom(Source):
                 # when its session has ended. It decides that itself, sometimes after it has
                 # fetched the profile, and can cancel its first redirect and start another,
                 # which wait_for_url rides out.
-                await wait_for_url(
-                    page,
-                    lambda u: is_collegeboard_login_url(u) or "/subjects" in u or "/assignments" in u,
-                    timeout=config.timeout(45_000),
-                )
+                try:
+                    await wait_for_url(
+                        page,
+                        lambda u: (is_collegeboard_login_url(u) or is_myap_login_url(u)
+                                   or "/subjects" in u or "/assignments" in u),
+                        timeout=config.timeout(45_000),
+                    )
+                except PlaywrightTimeoutError as e:
+                    await dump_debug(page, "ap_classroom_load")
+                    raise TimeoutError(
+                        f"AP Classroom reached neither a subject page nor a sign-in page within "
+                        f"{config.timeout(45_000) // 1000}s; it stopped at {redact(page.url)}") from e
+                if is_myap_login_url(page.url):
+                    # Logging out, the app sometimes ends on MyAP's sign-in, which waits for a
+                    # click and whose Student link signs in to AP Students. Start the sign-in
+                    # the app usually redirects to instead, which comes back here.
+                    self.log.info("AP Classroom sent us to MyAP's sign-in; signing in to AP Classroom")
+                    await page.goto(SIGN_IN)
                 if not on_collegeboard_login(page):
                     break
                 if sign_ins == MAX_SIGN_INS:

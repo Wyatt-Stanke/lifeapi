@@ -18,6 +18,12 @@ def is_collegeboard_login_url(url: str) -> bool:
     return "idp.collegeboard.org" in url or "account.collegeboard.org/login" in url
 
 
+def is_myap_login_url(url: str) -> bool:
+    """MyAP's own sign-in page: a Student/Educator chooser that doesn't redirect by itself.
+    Apps that log the user out sometimes send them there instead of the Okta sign-in."""
+    return "myap.collegeboard.org/login" in url
+
+
 def is_collegeboard_error_url(url: str) -> bool:
     """College Board's generic sign-in failure page, which it shows when the last step
     (trading Okta's code for a College Board session) fails."""
