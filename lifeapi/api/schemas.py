@@ -3,7 +3,7 @@ handed to a person or an agent on its own, so it explains the data, not just the
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -187,6 +187,55 @@ class ClearedSyncRequests(BaseModel):
     deleted: int = Field(description="How many requests were deleted or cancelled.")
 
 
+class HistoryRecord(BaseModel):
+    """One change to a grade-related value. Rows are added only when a value changes, so each
+    one holds until the next row for the same record."""
+
+    source: str = Field(description="Source of the record.", examples=["infinite_campus"])
+    kind: Literal["grade", "entry", "item"] = Field(
+        description="`grade`: a `Grade` record (course grade or overall GPA). `entry`: one scored "
+                    "assignment in that grade's `entries`. `item`: an `Item`'s status and score.")
+    id: str = Field(description="The grade's or item's `id`. For an `entry`, its grade's `id`.",
+                    examples=["gpa:6779:cumulative::w"])
+    entry: str | None = Field(description="For an `entry`: which one, as its `url` (or `name|due_at` "
+                                          "without one). Null otherwise.")
+    label: str | None = Field(description="What it is, as it read when recorded: `course_name · "
+                                          "term · task` for a grade (just the name for a GPA), the "
+                                          "assignment name for an entry, the title for an item.",
+                              examples=["AP MICROECONOMICS · MP1 · MARKING PERIOD"])
+    value: dict[str, Any] = Field(
+        description="The tracked fields from that moment, leaving out null ones. Grade: `letter`, "
+                    "`percent`, `gpa`, `points_earned`, `points_possible`, `term_gpa`, `categories` "
+                    "(each `name`, `letter`, `percent`, `points_earned`, `points_possible`). Entry: "
+                    "`score`, `points_earned`, `points_possible`, `percent`, `flags`, `comments`. "
+                    "Item: `status`, `score`, `points_possible`.",
+        examples=[{"gpa": 99.15}])
+    recorded_at: Timestamp = Field(description="When the scraper first saw this value (UTC). The "
+                                               "change happened on the source between the previous "
+                                               "fetch and this time.")
+
+
+class GpaValue(BaseModel):
+    value: float = Field(description="The GPA as a percentage, written to three decimal places "
+                                     "(`99.150`). Pad it back to three places to show it.",
+                         examples=[99.15])
+    last_seen_at: Timestamp = Field(description="When the scraper last read this GPA from the "
+                                                "source (UTC).")
+
+
+class CountValue(BaseModel):
+    value: int = Field(description="The count.", examples=[3])
+
+
+class StatusValue(BaseModel):
+    value: int = Field(description="How many enabled sources' most recent run failed.",
+                       examples=[0])
+    minutes: int | None = Field(description="Minutes since the stalest enabled source last "
+                                            "finished a successful full run: the age of the "
+                                            "oldest data. Null if a source has never succeeded.",
+                                examples=[95])
+
+
 class Health(BaseModel):
     status: Literal["ok"]
 
@@ -198,7 +247,7 @@ class Error(BaseModel):
 def errors(*codes: int) -> dict[int | str, dict]:
     """OpenAPI `responses` entries for the given error status codes."""
     text = {
-        401: "Bearer token missing or wrong (only when the server sets `LIFEAPI_API_TOKEN`).",
+        401: "Token missing or wrong (only when the server sets `LIFEAPI_API_TOKEN`).",
         404: "No record with that id.",
         400: "Bad request, e.g. an unknown source name or a partial fetch the source lacks.",
         503: "The scraper hasn't created the database yet.",
@@ -211,7 +260,11 @@ TAGS = [
                                      "announcements from every source, in one shape."},
     {"name": "grades", "description": "Course grades with category breakdowns and individual "
                                       "scores, and the overall GPA (Infinite Campus)."},
+    {"name": "history", "description": "Every change to grades, GPAs, assignment scores and "
+                                       "item statuses, kept for good."},
     {"name": "courses", "description": "Classes the student is enrolled in, per source."},
+    {"name": "values", "description": "Single numbers for widgets and displays, each as plain "
+                                      "text (`/min/…`) or JSON (`/json/…`). No token needed."},
     {"name": "status", "description": "Which sources exist, how fresh their data is, how often "
                                       "they're fetched and with what browser, and manual sync "
                                       "requests."},
@@ -231,7 +284,10 @@ platforms itself.
 | What's overdue? | `GET /items/missing` |
 | Any new announcements? | `GET /announcements?days=3` |
 | How am I doing in my classes? | `GET /grades` |
-| What's my GPA? | `GET /gpa` (a bare number to three decimal places, a percentage that can exceed 100; header `X-Last-Seen-At` says when it was last scraped) |
+| What's my GPA? | `GET /json/gpa` (`value` to three decimal places, a percentage that can exceed 100; `last_seen_at` says when it was last scraped) |
+| Just a number for a widget | `GET /min/{{name}}` (plain text) or `GET /json/{{name}}` (`{{"value": …}}`), where `name` is `gpa`, `missing` (overdue in the last `days`, default 7), `next` (due in the next `days`, default 7) or `status` (failing sources; the JSON adds `minutes` since the stalest source's last successful run) |
+| How has my GPA changed? | `GET /history?gpa=true` (one row per change) |
+| How did my grade in X move? | `GET /grades` for its `id`, then `GET /history?id=…` (the grade and its scored assignments) |
 | Find a specific assignment | `GET /items?q=essay` |
 | Everything for one class | `GET /courses`, then `GET /items?source=…&course_id=…` |
 | What did I get on X? | `GET /items?q=…` (`score`, `points_possible`), or `GET /grades` (`entries`) |
@@ -276,6 +332,11 @@ When a platform gives only a date, deadlines become 23:59 and post dates 00:00 l
 (`2026-10-06T00:00:00-04:00`); a value without one is read as UTC, and a bare date
 (`2026-10-06`) as midnight UTC.
 
+**History.** Records hold their current values only, but every change to a grade-related value
+(grade letters and percents, GPAs, category totals, assignment scores, item statuses and
+scores) is also kept in `GET /history`, for good. Scrape runs (`GET /runs`) are kept for 180
+days.
+
 **Deletions.** A record that disappears from its platform is kept with `active: false` and
 hidden from every list unless you pass `include_inactive=true`. If a source's scrape fails,
 its previous data stays as it was; check `GET /sources` before trusting stale data. A failed
@@ -300,8 +361,9 @@ or `false` changes it, and `DELETE` restores the source's default.
 
 ## Authentication
 
-If the server sets `LIFEAPI_API_TOKEN`, every endpoint except `/health` and `/gpa` requires
-`Authorization: Bearer <token>`. Otherwise no auth is needed.
+If the server sets `LIFEAPI_API_TOKEN`, every endpoint except `/health`, `/min/…` and `/json/…`
+requires the token, as `Authorization: Bearer <token>` or as the `token` query parameter
+(`?token=<token>`). Otherwise no auth is needed.
 
 ## Errors
 

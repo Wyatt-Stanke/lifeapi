@@ -4,7 +4,9 @@ schedules and browser settings.
 Each record is stored as its full JSON document plus a few indexed columns used for
 filtering. When a source finishes a successful full scrape, anything from that source that
 wasn't seen in the run is marked inactive (it was deleted/hidden upstream) rather than
-dropped, so history is kept.
+dropped, so history is kept. Records hold only their latest values; every change to a
+grade-related value is also appended to `history`, which is never pruned. Scrape runs are
+pruned after KEEP_RUNS_DAYS.
 """
 
 from __future__ import annotations
@@ -73,6 +75,24 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
     partial TEXT,  -- the partial fetch this run did (`Source.partials`); NULL for a full one
     failure TEXT  -- whose problem a failed run is: 'scraper', 'site' or 'login' (runner.failure_kind)
 );
+CREATE INDEX IF NOT EXISTS scrape_runs_source ON scrape_runs (source, run_id);
+-- Every change to a grade-related value, kept forever (see `_history_values`): a grade's
+-- letter, percent, GPA and categories (`kind` grade), each of its scored assignments
+-- (`entry`, keyed by `entry` within grade `id`), and an item's status and score (`item`).
+-- `value` is the JSON of the tracked fields; a row is added only when it differs from the
+-- latest row for the same record.
+CREATE TABLE IF NOT EXISTS history (
+    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    id TEXT NOT NULL,
+    entry TEXT,
+    label TEXT,
+    value TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS history_record ON history (source, kind, id, entry);
+CREATE INDEX IF NOT EXISTS history_recorded ON history (recorded_at);
 -- Manual sync requests from the API. `sources` is a JSON list, or NULL for every enabled
 -- source. The scraper sets started_at when a run picks one up, then finished_at and ok.
 CREATE TABLE IF NOT EXISTS sync_requests (
@@ -150,6 +170,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 # Failed runs keep their trail (`log`) for this many of each source's latest runs.
 KEEP_RUN_LOGS = 20
+# Scrape runs and finished sync requests older than this are deleted (`prune`), except
+# each source's latest run, latest full run and latest successful full run, which
+# schedules and /sources are worked out from.
+KEEP_RUNS_DAYS = 180
 
 
 def init_db(path: Path | None = None) -> None:
@@ -200,12 +224,85 @@ def finish_run(
     conn.commit()
 
 
+def prune(conn: sqlite3.Connection) -> int:
+    """Delete scrape runs and finished sync requests older than KEEP_RUNS_DAYS, keeping
+    the runs `next_fetch` and /sources need. Returns how many runs were deleted."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=KEEP_RUNS_DAYS)).isoformat(timespec="seconds")
+    n = conn.execute(
+        """DELETE FROM scrape_runs WHERE started_at<? AND run_id NOT IN (
+             SELECT MAX(run_id) FROM scrape_runs GROUP BY source
+             UNION SELECT MAX(run_id) FROM scrape_runs WHERE partial IS NULL GROUP BY source
+             UNION SELECT MAX(run_id) FROM scrape_runs WHERE partial IS NULL AND ok=1
+                   GROUP BY source)""",
+        (cutoff,),
+    ).rowcount
+    conn.execute("DELETE FROM sync_requests WHERE finished_at IS NOT NULL AND requested_at<?",
+                 (cutoff,))
+    conn.commit()
+    return n
+
+
+def _compact(fields: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in fields.items() if v not in (None, [], {})}
+
+
+def _history_values(result: ScrapeResult) -> Iterator[tuple[str, str, str | None, str, dict[str, Any]]]:
+    """(kind, id, entry, label, tracked fields) for every grade-related value in `result`.
+    Fields that are null or empty are left out, so adding one to a model changes nothing
+    until it has a value."""
+    for g in result.grades:
+        label = g.course_name if g.gpa is not None else " · ".join(
+            filter(None, (g.course_name, g.term, g.task)))
+        yield "grade", g.id, None, label, _compact({
+            "letter": g.letter, "percent": g.percent, "gpa": g.gpa,
+            "points_earned": g.extra.get("points_earned"),
+            "points_possible": g.extra.get("points_possible"),
+            "term_gpa": g.extra.get("term_gpa"),
+            "categories": [_compact({k: c.get(k) for k in
+                                     ("name", "letter", "percent", "points_earned", "points_possible")})
+                           for c in g.categories],
+        })
+        for e in g.entries:
+            yield "entry", g.id, e.url or f"{e.name}|{e.due_at}", e.name, _compact({
+                "score": e.score, "points_earned": e.points_earned,
+                "points_possible": e.points_possible, "percent": e.percent, "flags": e.flags,
+                "comments": e.comments,
+            })
+    for i in result.items:
+        yield "item", i.id, None, i.title, _compact({
+            "status": i.status, "score": i.score, "points_possible": i.points_possible,
+        })
+
+
+def _record_history(conn: sqlite3.Connection, source: str, result: ScrapeResult, ts: str) -> None:
+    latest = {
+        (r["kind"], r["id"], r["entry"]): r["value"]
+        for r in conn.execute(
+            """SELECT kind, id, entry, value FROM history WHERE history_id IN
+                 (SELECT MAX(history_id) FROM history WHERE source=? GROUP BY kind, id, entry)""",
+            (source,),
+        )
+    }
+    rows = []
+    for kind, id_, entry, label, fields in _history_values(result):
+        value = json.dumps(fields, sort_keys=True, separators=(",", ":"))
+        before = latest.get((kind, id_, entry))
+        if value != before and (before is not None or fields):  # nothing to start from
+            rows.append((source, kind, id_, entry, label, value, ts))
+    conn.executemany(
+        "INSERT INTO history (source, kind, id, entry, label, value, recorded_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+
+
 def save_result(conn: sqlite3.Connection, source: str, result: ScrapeResult,
                 partial: bool = False) -> None:
-    """Upsert everything from one successful source scrape and retire what disappeared.
-    A partial scrape saw only part of the source, so it retires nothing; the next full
-    one does."""
+    """Upsert everything from one successful source scrape, record grade-related changes in
+    `history`, and retire what disappeared. A partial scrape saw only part of the source, so
+    it retires nothing; the next full one does."""
     ts = now_iso()
+    _record_history(conn, source, result, ts)
 
     for c in result.courses:
         conn.execute(

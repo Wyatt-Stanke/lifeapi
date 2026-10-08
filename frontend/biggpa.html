@@ -87,7 +87,7 @@ const places = new Intl.NumberFormat("en-US", { minimumFractionDigits: 3, maximu
 const SCALE_KEY = "biggpa-scale";
 
 let gpa = null;        // the last GPA received, as a percentage
-let seenAt = null;     // when the scraper last read it (the API's X-Last-Seen-At)
+let seenAt = null;     // when the scraper last read it (the API's last_seen_at)
 let error = "";        // why the last refresh failed, if it did
 let fourScale = false; // show the 4.0 scale instead of the percentage
 try { fourScale = localStorage.getItem(SCALE_KEY) === "4"; } catch {}
@@ -122,10 +122,11 @@ function render() {
 
 async function load() {
   try {
-    const res = await fetch("/api/gpa");
+    const res = await fetch("/api/json/gpa");
     if (res.ok) {
-      gpa = await res.json();
-      const seen = Date.parse(res.headers.get("X-Last-Seen-At"));
+      const body = await res.json();
+      gpa = body.value;
+      const seen = Date.parse(body.last_seen_at);
       seenAt = Number.isNaN(seen) ? null : new Date(seen);
       error = "";
     } else {
