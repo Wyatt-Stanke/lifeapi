@@ -98,6 +98,19 @@ class Grade(models.Grade, Tracked):
     __doc__ = models.Grade.__doc__
 
 
+class RecentComment(models.Comment):
+    """A comment, with the item it's on (`GET /comments`)."""
+
+    source: str = Field(description="The item's source.", examples=["google_classroom"])
+    item_id: str = Field(description="The item's `id`, for `GET /items/{source}/{item_id}`.")
+    item_kind: models.ItemKind = Field(description="The item's `kind`.")
+    item_title: str = Field(description="The item's `title`.")
+    course_id: str | None = Field(None, description="The item's course, in the same `source`.")
+    course_name: str | None = Field(None, description="The item's course name.")
+    url: str | None = Field(None, description="Deep link to the item on its platform, where the "
+                                              "comment can be read and answered.")
+
+
 class RunCounts(BaseModel):
     courses: int | None = Field(description="Courses the run saved.")
     items: int | None = Field(description="Items the run saved.")
@@ -555,6 +568,7 @@ announcements); those additions stay in lifeapi and never reach a platform.
 | What's due soon? | `GET /items/upcoming?days=7` |
 | What's overdue? | `GET /items/missing` |
 | Any new announcements? | `GET /announcements?days=3` |
+| Any new comments? | `GET /comments?days=3` (class and private comments, newest first) |
 | How am I doing in my classes? | `GET /grades` |
 | What's my GPA? | `GET /json/gpa` (`value` to three decimal places, a percentage that can exceed 100; `last_seen_at` says when it was last scraped) |
 | Just a number for a widget | `GET /min/{{name}}` (plain text) or `GET /json/{{name}}` (`{{"value": …}}`), where `name` is `gpa`, `missing` (overdue in the last `days`, default 7), `next` (due in the next `days`, default 7) or `status` (failing sources; the JSON adds `minutes` since the stalest source's last successful run) |

@@ -396,7 +396,7 @@ restores the default. The explorer edits it in the Sync status page's Browser co
 ### Frontend (`frontend/`)
 
 A temporary, deliberately unstyled explorer: plain semantic HTML, no CSS, no build step.
-It's a user-facing wrapper (Today, Upcoming, Missing, Announcements, Courses, Grades,
+It's a user-facing wrapper (Today, Upcoming, Missing, Announcements, Comments, Courses, Grades,
 Search, Sync status with sync buttons and schedule and browser editors; item pages with a
 ✎ button beside each editable field (due date, status, note, and a custom item's title, kind,
 points and description) that opens a small form under it (`editable()`, `editors()`); "Convert
@@ -460,6 +460,11 @@ API access stays at `/api/docs`.
   student's own attachments, `extra.links` are links from the description,
   `extra.list_signature`, `extra.detail_fetched_at` and (announcements) `extra.read_at`
   are cache bookkeeping.
+- `Comment.posted_at` is the source's display text ("10:42 AM", "Sep 18"), which is relative
+  to when it was read, so the scraper also stores `posted_time`, parsed then
+  (`google_classroom.comments()`). `GET /comments` and the explorer's Comments page sort and
+  filter by it. Comments cached before ids and `posted_time` were kept have no `id`: detail
+  pages get `posted_time` from `detail_fetched_at` on merge, and announcements re-read them.
 - Infinite Campus produces `Grade` records (one per course × term × grading task), each
   with `GradeEntry` assignment scores, plus one course-less `Grade` per overall GPA
   (`gpa` set, id `gpa:<calendarID>:<type>:<termSeq>:<w|uw>`). It produces no `Item`s.

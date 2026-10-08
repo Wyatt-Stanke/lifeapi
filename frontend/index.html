@@ -13,6 +13,7 @@
     <a href="#/upcoming">Upcoming</a> |
     <a href="#/missing">Missing</a> |
     <a href="#/announcements">Announcements</a> |
+    <a href="#/comments">Comments</a> |
     <a href="#/courses">Courses</a> |
     <a href="#/grades">Grades</a> |
     <a href="#/search">Search</a> |
@@ -365,6 +366,37 @@ async function viewAnnouncements(params) {
   ];
 }
 
+// When a comment was posted. Classroom gives older ones a date only (posted_time 00:00).
+function commentWhen(c) {
+  if (!c.posted_time) return c.posted_at || "";
+  if (/\d:\d\d/.test(c.posted_at || "")) return when(c.posted_time);
+  const d = new Date(c.posted_time), today = new Date();
+  const days = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate()) - d) / 86400000);
+  return days === 0 ? "today" : days === 1 ? "yesterday"
+    : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric" });
+}
+
+// One comment: who and when, the item it's on, and the text.
+function commentLine(c) {
+  return h("li", {},
+    commentWhen(c), " — ",
+    h("strong", {}, c.author || "?"), c.private ? " (private)" : "", " on ",
+    h("a", { href: itemHref({ source: c.source, id: c.item_id }) }, c.item_title || "(untitled)"),
+    h("br"), h("small", {}, [courseLink(c), c.course_name ? " · " : "", sourceName(c.source), " · ", label(c.item_kind)]),
+    h("blockquote", {}, text(c.text)));
+}
+
+async function viewComments(params) {
+  const days = Number(params.get("days") || 7);
+  const comments = await api("/comments", { days });
+  return [
+    h("h1", {}, "Recent comments"),
+    h("p", {}, "Last ", h("select", { onchange: (e) => { location.hash = "#/comments?days=" + e.target.value; } },
+      [1, 3, 7, 14, 30, 90, 365].map((d) => h("option", { value: d, selected: d === days }, `${d} days`))), ` — ${comments.length}`),
+    comments.length ? h("ul", {}, comments.map(commentLine)) : h("p", {}, h("em", {}, "No comments.")),
+  ];
+}
+
 async function viewCourses(params) {
   const inactive = params.get("inactive") === "1";
   const courses = await api("/courses", { include_inactive: inactive });
@@ -471,7 +503,8 @@ async function viewItem(source, id) {
     it.attachments?.length ? [h("h2", {}, "Attachments"), attachments(it.attachments)] : null,
     it.extra?.submitted_work?.length ? [h("h2", {}, "Your submitted work"), attachments(it.extra.submitted_work)] : null,
     it.comments?.length ? [h("h2", {}, "Comments"), h("ul", {}, it.comments.map((c) => h("li", {},
-      h("strong", {}, c.author || "?"), c.private ? " (private)" : "", c.posted_at ? ` · ${c.posted_at}` : "", ": ", c.text)))] : null,
+      h("strong", {}, c.author || "?"), c.private ? " (private)" : "",
+      c.posted_at ? [" · ", commentWhen(c)] : "", ": ", c.text)))] : null,
     h("details", {}, h("summary", {}, "All data"), h("pre", {}, JSON.stringify(it, null, 2))),
     commandSection(it, actions),
   ];
@@ -1041,6 +1074,7 @@ const routes = [
   [/^\/upcoming$/, viewUpcoming],
   [/^\/missing$/, viewMissing],
   [/^\/announcements$/, viewAnnouncements],
+  [/^\/comments$/, viewComments],
   [/^\/courses$/, viewCourses],
   [/^\/course\/([^/]+)\/([^/]+)$/, viewCourse],
   [/^\/item\/([^/]+)\/([^/]+)$/, viewItem],
