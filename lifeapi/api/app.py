@@ -37,7 +37,7 @@ from .schemas import (
     DESCRIPTION, DONE_STATUSES, TAGS, Action, AssignmentEdit, Browser, BrowserSettings,
     ClearedSyncRequests, CommandRequest, CommandResult, ConversionDraft, CountValue, Course,
     DueSettings, Error, GpaValue, Grade, Health, HistoryRecord, Item, NewAssignment, NoteSettings,
-    Run, RunDetail, Schedule, ScheduleSettings, SourceStatus, StatusSettings, StatusValue,
+    RecentComment, Run, RunDetail, Schedule, ScheduleSettings, SourceStatus, StatusSettings, StatusValue,
     SyncRequest, errors,
 )
 
@@ -579,6 +579,47 @@ def announcements(
         args.append(source)
     sql += " ORDER BY posted_at DESC"
     return [storage.item_to_dict(r) for r in conn.execute(sql, args)]
+
+
+@app.get("/comments", dependencies=[Auth], tags=["items"], operation_id="listRecentComments",
+         summary="List recent comments", responses=READ_ERRORS)
+def recent_comments(
+    days: int = Query(7, ge=1, le=365, description="How many days back to look."),
+    source: str | None = _source_param(),
+    course_id: str | None = Query(None, description="Only comments on items in this course. "
+                                                    "Course ids are per source, so pair with "
+                                                    "`source`."),
+    conn: sqlite3.Connection = Depends(db),
+) -> list[RecentComment]:
+    """Comments posted in the last `days` days on any active item (class comments on
+    announcements and classwork, and private comments between the student and a teacher),
+    newest first, each with the item it's on. Only Google Classroom has comments today. It
+    shows many comments' dates without a time, so those count as posted at 00:00 and sort
+    after that day's timed ones. Comments whose date couldn't be read aren't listed; they're
+    still on their item (`GET /items/{source}/{item_id}`)."""
+    sql = "SELECT * FROM item_view WHERE active=1 AND json_array_length(data, '$.comments')>0"
+    args: list[Any] = []
+    if source:
+        sql += " AND source=?"
+        args.append(source)
+    if course_id:
+        sql += " AND course_id=?"
+        args.append(course_id)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    found = []
+    for row in conn.execute(sql, args):
+        it = json.loads(row["data"])
+        for n, c in enumerate(it["comments"]):
+            if not c.get("posted_time") or datetime.fromisoformat(c["posted_time"]) < since:
+                continue
+            # Classroom lists an item's comments oldest first: `n` orders ties on one date.
+            found.append(((datetime.fromisoformat(c["posted_time"]), n), {
+                **c, "source": row["source"], "item_id": row["id"], "item_kind": row["kind"],
+                "item_title": row["title"], "course_id": row["course_id"],
+                "course_name": row["course_name"], "url": it.get("url"),
+            }))
+    found.sort(key=lambda f: f[0], reverse=True)
+    return [c for _, c in found]
 
 
 ITEM_SOURCE = Path(description=f"The item's `source`: {SOURCE_NAMES}.")
