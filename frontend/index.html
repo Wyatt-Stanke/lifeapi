@@ -309,8 +309,7 @@ async function convertForm(a, close) {
 
   const pickDraft = d.drafts.length > 1 ? h("p", {}, `This post seems to ask for ${d.drafts.length} things: `,
     h("select", { onchange: (e) => fill(Number(e.target.value)) },
-      d.drafts.map((x, i) => h("option", { value: i }, `${x.title}${x.due_at ? ` — ${relative(x.due_at)}` : ""}`))),
-    h("br"), h("small", {}, "Make one, then open the form again for the next.")) : null;
+      d.drafts.map((x, i) => h("option", { value: i }, `${x.title}${x.due_at ? ` — ${relative(x.due_at)}` : ""}`)))) : null;
   const datePicks = d.dates.length ? h("p", {}, h("small", {}, "Dates in the post: "),
     d.dates.flatMap((m, i) => [i ? " " : "", h("button", { type: "button", title: fullDate(m.at), onclick: () => { due.value = toLocalInput(m.at); guess.replaceChildren(`Read “${m.text}” as ${fullDate(m.at)}${timeNote(m)}.`); } },
       `${m.text} → ${relative(m.at)}`)])) : null;
@@ -341,7 +340,6 @@ async function convertForm(a, close) {
   } },
     h("fieldset", {},
       h("legend", {}, "New assignment from this announcement"),
-      d.converted.length ? h("p", {}, h("small", {}, `${d.converted.length} already made from this post (listed above).`)) : null,
       related, pickDraft,
       h("p", {}, h("label", {}, "Title ", title), h("br"), titlePicks),
       h("p", {}, source),
@@ -422,7 +420,7 @@ async function viewItem(source, id) {
   ]);
   const fromHref = custom && `#/item/${encodeURIComponent(it.source)}/${encodeURIComponent(it.converted_from)}`;
   const theirs = it.user?.due_at && !custom
-    ? h("small", {}, h("br"), `Your deadline. ${sourceName(it.source)} says `, it.source_due_at ? fullDate(it.source_due_at) : "none", ".")
+    ? h("small", {}, h("br"), `${sourceName(it.source)} says `, it.source_due_at ? fullDate(it.source_due_at) : "none", ".")
     : null;
   const facts = [
     ["Course", courseLink(it)],
@@ -464,12 +462,11 @@ function dueForm(it) {
   const due = h("input", { type: "datetime-local", required: true, value: toLocalInput(it.due_at) });
   const send = async (opts) => { if (await write("change the deadline", itemPath(it) + "/due", opts)) route(); };
   return h("details", { open: !!it.user?.due_at && !custom },
-    h("summary", {}, custom ? "Change the deadline" : it.user?.due_at ? "Your deadline" : "Change the deadline (an extension, say)"),
+    h("summary", {}, custom ? "Change the deadline" : it.user?.due_at ? "Your deadline" : "Change the deadline"),
     h("form", { onsubmit: (e) => { e.preventDefault(); send({ method: "PUT", json: { due_at: fromLocalInput(due.value) } }); } },
       h("p", {}, h("label", {}, "Due ", due), " ", h("button", {}, "Save"), " ",
         it.user?.due_at ? h("button", { type: "button", onclick: () => send({ method: "DELETE" }) },
-          custom ? "Remove the deadline" : `Go back to ${sourceName(it.source)}'s (${it.source_due_at ? fullDate(it.source_due_at) : "none"})`) : null),
-      custom ? null : h("p", {}, h("small", {}, `Changes it here only: everything in lifeapi uses yours, and ${sourceName(it.source)} keeps its own, shown alongside.`))));
+          custom ? "Remove the deadline" : `Go back to ${sourceName(it.source)}'s (${it.source_due_at ? fullDate(it.source_due_at) : "none"})`) : null)));
 }
 
 // The student's note on an item, kept in lifeapi only.
@@ -817,8 +814,6 @@ function commandSection(it, actions) {
   return [h("h2", {}, "Command"),
     h("form", { onsubmit: (e) => { e.preventDefault(); if (input.value.trim()) location.hash = `${here}?do=${encodeURIComponent(input.value.trim())}`; } },
       input, " ", h("button", {}, "Do it")),
-    it.url && it.converted_from == null ? h("p", {}, h("small", {}, "From anywhere: open ",
-      h("code", {}, `${location.host}/${it.url}##due friday 5pm`), " (the item's link after this site's address, then ## and the command).")) : null,
     actions.length ? h("ul", {}, actions.map((a) => h("li", {}, when(a.created_at), ` — “${a.command}”: `, a.summary,
       a.undone_by != null ? h("em", {}, " (undone)") : [" ", undoButton(a)]))) : null];
 }
