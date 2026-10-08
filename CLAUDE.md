@@ -134,10 +134,20 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
 ### Storage and API
 
 - `storage.py`: tables `courses`, `items`, `grades` and `scrape_runs`, plus `sync_requests`,
-  `schedules` and `browser_settings`. Each record row stores the full model JSON in `data`, plus a few indexed
+  `schedules`, `browser_settings` and `history`. Each record row stores the full model JSON in `data`, plus a few indexed
   columns used by API filters. `save_result` upserts and then, for a full run, marks rows
   not seen in that run `active=0` (soft delete). `datetime`s are stored as UTC ISO strings
-  in the indexed columns. New columns go in both `SCHEMA` and `_migrate`. The API's `db()`
+  in the indexed columns. New columns go in both `SCHEMA` and `_migrate`.
+- Retention, for a server that runs for years: records are never deleted (only marked
+  inactive), but they hold only their latest values. `save_result` appends every change to
+  a grade-related value to `history` (grade letter/percent/GPA/categories, each `entries`
+  score, item status/score; the fields are in `_history_values`), comparing against the
+  latest row per record, so it's a few KB a week and is never pruned. Add a field there to
+  track it. `storage.prune()`, called by each run that scrapes something, deletes
+  `scrape_runs` and finished `sync_requests` older than `KEEP_RUNS_DAYS` (180), except each
+  source's latest run, latest full run and latest successful full run, which `next_fetch`
+  and `/sources` need. Failed-run logs are capped separately (`KEEP_RUN_LOGS`). Compose
+  rotates container logs (`x-logging`). The API's `db()`
   runs `init_db()` once per process, so reads work on a database an older scraper made.
 - The database is in WAL mode. Read-only connections deliberately use `mode=rw` with
   `PRAGMA query_only=ON`, not `mode=ro`: readers must be able to recreate the
@@ -146,11 +156,16 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   different threadpool threads.
 - `api/app.py`: FastAPI, read-only apart from `/sync`, `/sources/{source}/schedule` and
   `/sources/{source}/browser`. The
-  optional `LIFEAPI_API_TOKEN` bearer auth applies to everything except `/health` and `/gpa`
-  (public so `/biggpa` works on any device). Every list endpoint hides inactive rows unless
+  optional `LIFEAPI_API_TOKEN` auth (bearer header or `?token=` query param) applies to
+  everything except `/health` and the single-value endpoints `/min/<name>` (plain-text number)
+  and `/json/<name>` (`{"value": …}`), for `gpa`, `missing`, `next` and `status`.
+  Those are public so `/biggpa` and widgets work on any device; `_value()` registers both
+  forms from one function, copying its signature so query params (`?days=`) work on both. Every list endpoint hides inactive rows unless
   `include_inactive=true`. The API imports the scraper's `REGISTRY` (to validate sync
   requests and schedules, and list never-run sources and their partials in `/sources`), but
   never opens a browser.
+  `GET /db` returns the whole database (SQLite backup API into a temp file, deleted after
+  sending), for copying the server's data to a local install.
 - The OpenAPI spec (`/openapi.json`) is meant to be handed to a person or agent on its own,
   so it's the API's documentation. The overview (common questions, sources, ids, statuses,
   time zones) is `DESCRIPTION` in `api/schemas.py`. Field docs are the `Field(description=)`s
@@ -254,19 +269,18 @@ API access stays at `/api/docs`.
   It sends `X-Forwarded-Prefix: /api`, which the API's `forwarded_prefix` middleware turns
   into the request's `root_path`. That way `/api/docs` loads `/api/openapi.json`, and the
   spec's `servers` is `/api`, so "Try it out" works. Of the API's response headers it passes
-  on only `Content-Type` and those in `PASS_HEADERS` (e.g. `/gpa`'s `X-Last-Seen-At`), so a
-  new header a page reads must be added there. Paths in `PAGES` serve standalone pages,
+  on only `Content-Type`, so pages should read data from the body, not headers. Paths in `PAGES` serve standalone pages,
   and every other path serves `index.html`. It re-reads pages on each request, so page edits need only a
   browser refresh. Changes to `serve.py` need a restart. `--host-page HOST=PAGE` serves a
   `PAGES` entry at `/` when the `Host` header (port ignored) is `HOST`. Compose uses it to put
   `/biggpa` at the root of `gpa.stan.ke`, a second domain on the same service.
-- `biggpa.html` (`/biggpa`) is the one styled page: `GET /api/gpa` in large Inter (Google
+- `biggpa.html` (`/biggpa`) is the one styled page: `GET /api/json/gpa` in large Inter (Google
   Fonts), black on white, sized to the window by `fit()`, re-fetched every 5 minutes (a failed
-  refresh keeps the last value). It sends no token (`/gpa` needs none), so it works on any
+  refresh keeps the last value). It sends no token (`/json/gpa` needs none), so it works on any
   device. The unit label is a `<button>` styled as plain header text: clicking it switches
   between the percentage and the 4.0 scale (the percentage / 25, still to three places), and
   the choice is kept in `localStorage`. The line under the title is the age of
-  `X-Last-Seen-At` ("Updated 2 h ago"), preceded by the error when a refresh fails.
+  `last_seen_at` ("Updated 2 h ago"), preceded by the error when a refresh fails.
 - `index.html` holds all the JS in one inline script. A tiny `h(tag, attrs, ...kids)`
   helper builds the DOM. Views are async functions that return nodes, and the hash router
   calls them as `view(...pathArgs, params)`. Routes are `#/item/<source>/<id>`,
@@ -299,7 +313,7 @@ API access stays at `/api/docs`.
   (`gpa` set, id `gpa:<calendarID>:<type>:<termSeq>:<w|uw>`). It produces no `Item`s.
 - GPAs are published to three decimal places (`models.GPA_PLACES`). Stored as floats, they
   lose trailing zeros (`99.150` is stored as `99.15`), so anything that turns a GPA into text
-  pads it to three places: `GET /gpa` writes its body by hand, `/biggpa` and the explorer's
+  pads it to three places: `/min/gpa` and `/json/gpa` write their bodies by hand, `/biggpa` and the explorer's
   `gpaText()` format it.
 - `status` keeps each platform's own wording, in snake_case.
 

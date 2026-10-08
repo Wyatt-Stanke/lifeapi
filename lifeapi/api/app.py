@@ -8,23 +8,29 @@ code), so keep summaries, descriptions and `schemas.py` in step with behavior.""
 
 from __future__ import annotations
 
+import inspect
+import json
+import os
+import secrets
 import shlex
 import sqlite3
+import tempfile
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, Response
-from fastapi.responses import PlainTextResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.security import APIKeyQuery, HTTPAuthorizationCredentials, HTTPBearer
+from starlette.background import BackgroundTask
 
 from .. import config, storage
 from ..models import GPA_PLACES, ItemKind
 from ..scraper import sources as _sources  # noqa: F401  (registers all sources)
 from ..scraper.base import REGISTRY, Source
 from .schemas import (
-    DESCRIPTION, DONE_STATUSES, TAGS, Browser, BrowserSettings, ClearedSyncRequests, Course,
-    Error, Grade, Health, Item, Run, RunDetail, Schedule, ScheduleSettings, SourceStatus,
-    SyncRequest, errors,
+    DESCRIPTION, DONE_STATUSES, TAGS, Browser, BrowserSettings, ClearedSyncRequests,
+    CountValue, Course, Error, GpaValue, Grade, Health, HistoryRecord, Item, Run, RunDetail, Schedule,
+    ScheduleSettings, SourceStatus, StatusValue, SyncRequest, errors,
 )
 
 app = FastAPI(
@@ -52,9 +58,24 @@ _bearer = HTTPBearer(
 )
 
 
-def require_token(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> None:
-    if config.API_TOKEN and (creds is None or creds.credentials != config.API_TOKEN):
-        raise HTTPException(401, "Missing or invalid bearer token")
+_query_token = APIKeyQuery(
+    name="token",
+    auto_error=False,
+    description="The same token as the `token` query parameter, for clients that can't set "
+                "headers. Required only when the server sets `LIFEAPI_API_TOKEN`.",
+)
+
+
+def require_token(
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    token: str | None = Depends(_query_token),
+) -> None:
+    if not config.API_TOKEN:
+        return
+    expected = config.API_TOKEN.encode()
+    given = [t for t in (creds and creds.credentials, token) if t]
+    if not any(secrets.compare_digest(t.encode(), expected) for t in given):
+        raise HTTPException(401, "Missing or invalid token")
 
 
 _schema_ready = False
@@ -359,6 +380,32 @@ def run_log(run_id: int = RUN_ID, conn: sqlite3.Connection = Depends(db)) -> str
     return log
 
 
+@app.get("/db", dependencies=[Auth], tags=["status"], operation_id="downloadDatabase",
+         summary="Download the whole database", response_class=FileResponse,
+         responses={200: {"content": {"application/vnd.sqlite3": {
+                        "schema": {"type": "string", "format": "binary"}}}},
+                    **errors(401, 503)})
+def database(conn: sqlite3.Connection = Depends(db)) -> FileResponse:
+    """The whole SQLite database as one file (`lifeapi.db`), a consistent snapshot even while
+    the scraper writes. It holds every record, run and setting, so another lifeapi install can
+    use it as its `data/lifeapi.db`. Not useful to an agent: use the other endpoints instead."""
+    fd, path = tempfile.mkstemp(prefix="lifeapi-", suffix=".db")
+    os.close(fd)
+    try:
+        # The backup API copies page by page under a read transaction, so the snapshot is
+        # consistent and includes whatever is still only in the -wal file.
+        dest = sqlite3.connect(path)
+        try:
+            conn.backup(dest)
+        finally:
+            dest.close()
+    except BaseException:
+        os.unlink(path)
+        raise
+    return FileResponse(path, media_type="application/vnd.sqlite3", filename="lifeapi.db",
+                        background=BackgroundTask(os.unlink, path))
+
+
 @app.get("/courses", dependencies=[Auth], tags=["courses"], operation_id="listCourses",
          summary="List courses", responses=READ_ERRORS)
 def courses(
@@ -452,6 +499,31 @@ def items(
     return [storage.row_to_dict(r) for r in conn.execute(sql, args)]
 
 
+def _due_sql(start: datetime, end: datetime, include_done: bool = False,
+             what: str = "*") -> tuple[str, list[Any]]:
+    """Active items due from `start` to `end` (inclusive), without finished ones unless
+    `include_done`. `/items/upcoming` and the `next` value share it."""
+    sql = f"SELECT {what} FROM items WHERE active=1 AND due_at>=? AND due_at<=?"
+    args: list[Any] = [_iso(start), _iso(end)]
+    if not include_done:
+        sql += f" AND (status IS NULL OR status NOT IN ({','.join('?' * len(DONE_STATUSES))}))"
+        args += DONE_STATUSES
+    return sql, args
+
+
+def _missing_sql(what: str = "*", days: int | None = None) -> tuple[str, list[Any]]:
+    """Overdue items not turned in, as `/items/missing` and the `missing` value count them;
+    with `days`, only those due in the last `days` days."""
+    now = datetime.now(timezone.utc)
+    sql = f"""SELECT {what} FROM items WHERE active=1 AND due_at<? AND
+              (status IN ('missing','assigned') OR status IS NULL) AND kind!='announcement'"""
+    args: list[Any] = [_iso(now)]
+    if days is not None:
+        sql += " AND due_at>=?"
+        args.append(_iso(now - timedelta(days=days)))
+    return sql, args
+
+
 @app.get("/items/upcoming", dependencies=[Auth], tags=["items"], operation_id="listUpcomingItems",
          summary="List work due soon", responses=READ_ERRORS)
 def upcoming(
@@ -463,12 +535,8 @@ def upcoming(
     """Items due between now and `days` from now, soonest first. By default leaves out work
     already finished, so this is the to-do list."""
     now = datetime.now(timezone.utc)
-    sql = "SELECT * FROM items WHERE active=1 AND due_at>=? AND due_at<=?"
-    if not include_done:
-        sql += f" AND (status IS NULL OR status NOT IN ({','.join('?' * len(DONE_STATUSES))}))"
-    sql += " ORDER BY due_at"
-    args = [_iso(now), _iso(now + timedelta(days=days))] + ([] if include_done else list(DONE_STATUSES))
-    return [storage.row_to_dict(r) for r in conn.execute(sql, args)]
+    sql, args = _due_sql(now, now + timedelta(days=days), include_done)
+    return [storage.row_to_dict(r) for r in conn.execute(sql + " ORDER BY due_at", args)]
 
 
 @app.get("/items/missing", dependencies=[Auth], tags=["items"], operation_id="listMissingItems",
@@ -477,11 +545,8 @@ def missing(conn: sqlite3.Connection = Depends(db)) -> list[Item]:
     """Items past their deadline whose status is `missing`, `assigned` or empty (so not
     turned in on the source), most recently due first. Announcements are excluded. Some
     platforms keep old work listed long after it stops mattering, so expect a long tail."""
-    now = datetime.now(timezone.utc)
-    sql = """SELECT * FROM items WHERE active=1 AND due_at<? AND
-             (status IN ('missing','assigned') OR status IS NULL) AND kind!='announcement'
-             ORDER BY due_at DESC"""
-    return [storage.row_to_dict(r) for r in conn.execute(sql, (_iso(now),))]
+    sql, args = _missing_sql()
+    return [storage.row_to_dict(r) for r in conn.execute(sql + " ORDER BY due_at DESC", args)]
 
 
 @app.get("/announcements", dependencies=[Auth], tags=["items"], operation_id="listAnnouncements",
@@ -542,24 +607,98 @@ def grades(
     return [storage.row_to_dict(r) for r in conn.execute(sql, args)]
 
 
-@app.get("/gpa", tags=["grades"], operation_id="getGpa", response_model=float,
-         summary="Get the overall GPA as a percentage",
-         responses={200: {"headers": {"X-Last-Seen-At": {
-                        "description": "When the scraper last read this GPA from the source (the "
-                                       "record's `last_seen_at`), as a UTC ISO 8601 time.",
-                        "schema": {"type": "string", "format": "date-time"}}}},
-                    404: {"model": Error, "description": "No GPA has been scraped yet."},
-                    **errors(503)})
-def gpa(conn: sqlite3.Connection = Depends(db)) -> Response:
-    """The overall GPA as a bare JSON number, always written with three decimal places, e.g.
-    `99.150`. A JSON parser reads that as `99.15`, so pad it to three places again to show
-    it. This school's GPA is already a percentage (as Infinite Campus shows it, to three
-    places), so the value is the GPA as published. It's weighted, so honors and AP courses
-    can lift it above 100. When several GPA records exist, this is the cumulative weighted
-    one. The `X-Last-Seen-At` header says when it was last read from the source. 404 until a
-    GPA has been scraped. Needs no token, so a display like the explorer's `/biggpa` page
-    works on any device. Every GPA record (term, unweighted, rank) is in `GET /grades`, with
-    `gpa` set, behind the token."""
+@app.get("/history", dependencies=[Auth], tags=["history"], operation_id="listHistory",
+         summary="List changes to grades, scores and statuses", responses=READ_ERRORS)
+def history(
+    source: str | None = _source_param(),
+    kind: list[Literal["grade", "entry", "item"]] | None = Query(
+        None, description="Only these kinds. Repeat to match any of several."),
+    id: str | None = Query(None, description="Only this grade or item (its `id`). A grade's id "
+                                             "also matches its entries.",
+                           examples=["781223:6114:1"]),
+    gpa: bool = Query(False, description="Only overall GPA records."),
+    since: datetime | None = Query(None, description="Recorded at or after this time (ISO 8601; "
+                                                     "include an offset)."),
+    limit: int = Query(500, ge=1, le=5000, description="Maximum rows to return."),
+    conn: sqlite3.Connection = Depends(db),
+) -> list[HistoryRecord]:
+    """Every recorded change to a grade-related value, newest first. A row is added when the
+    scraper sees a value differ from the last one recorded (including the first time it sees
+    a record), so the rows for one record are its full history, and each value holds until
+    the next row. Kept for good, unlike `GET /runs`. Recording began when this endpoint was
+    added, so older changes aren't here."""
+    sql, args = "SELECT * FROM history WHERE 1=1", []
+    if source:
+        sql += " AND source=?"
+        args.append(source)
+    if kind:
+        sql += f" AND kind IN ({','.join('?' * len(kind))})"
+        args += kind
+    if id is not None:
+        sql += " AND id=?"
+        args.append(id)
+    if gpa:
+        sql += " AND kind='grade' AND json_extract(value, '$.gpa') IS NOT NULL"
+    if since:
+        sql += " AND recorded_at>=?"
+        args.append(_iso(since))
+    sql += " ORDER BY history_id DESC LIMIT ?"
+    args.append(limit)
+    return [{**dict(r), "value": json.loads(r["value"])} for r in conn.execute(sql, args)]
+
+
+# Single values for widgets and displays: each is served at /min/<name> as a bare number in
+# text/plain and at /json/<name> as a small JSON object. Neither needs a token. Bodies are
+# written by hand so the GPA keeps its trailing zeros (99.150 would serialize as 99.15).
+
+MIN_RESPONSES = {200: {"content": {"text/plain": {"schema": {"type": "string"}}}}}
+
+
+def _value(name: str, summary: str, doc: str, model: type, responses: dict | None = None):
+    """Register `fn(conn, **query params) -> (number as text, extra JSON fields)` as GET
+    /min/<name> and GET /json/<name>. Both take `fn`'s parameters (its `conn` defaults to
+    `Depends(db)`, the rest to `Query(...)`), so FastAPI parses them the same way."""
+    op = name.title()
+    responses = {**(responses or {}), **errors(503)}
+    min_doc = f"{doc}\n\nThe number alone, as plain text. `GET /json/{name}` has it as JSON."
+    json_doc = f"{doc}\n\nAs JSON. `GET /min/{name}` has the number alone, as plain text."
+
+    def register(fn):
+        def as_text(**kwargs: Any) -> Response:
+            text, _ = fn(**kwargs)
+            return PlainTextResponse(text)
+
+        def as_json(**kwargs: Any) -> Response:
+            text, fields = fn(**kwargs)
+            rest = "".join(f", {json.dumps(k)}: {json.dumps(v)}" for k, v in fields.items())
+            return Response(f'{{"value": {text}{rest}}}', media_type="application/json")
+
+        for route in (as_text, as_json):
+            route.__signature__ = inspect.signature(fn)  # what FastAPI reads parameters from
+        app.get(f"/min/{name}", tags=["values"], operation_id=f"get{op}Text", summary=summary,
+                description=min_doc, response_class=PlainTextResponse,
+                responses={**MIN_RESPONSES, **responses})(as_text)
+        app.get(f"/json/{name}", tags=["values"], operation_id=f"get{op}", summary=summary,
+                description=json_doc, response_model=model, responses=responses)(as_json)
+        return fn
+
+    return register
+
+
+def _count(conn: sqlite3.Connection, query: tuple[str, list[Any]]) -> tuple[str, dict]:
+    sql, args = query
+    return str(conn.execute(sql, args).fetchone()[0]), {}
+
+
+@_value("gpa", "Overall GPA, as a percentage", model=GpaValue,
+        responses={404: {"model": Error, "description": "No GPA has been scraped yet."}},
+        doc="""The overall GPA, always written with three decimal places, e.g. `99.150`. A JSON
+parser reads that as `99.15`, so pad it to three places again to show it. This school's GPA is
+already a percentage (as Infinite Campus shows it, to three places), so the value is the GPA as
+published. It's weighted, so honors and AP courses can lift it above 100. When several GPA
+records exist, this is the cumulative weighted one. 404 until a GPA has been scraped. Every GPA
+record (term, unweighted, rank) is in `GET /grades`, with `gpa` set, behind the token.""")
+def _gpa(conn: sqlite3.Connection = Depends(db)) -> tuple[str, dict]:
     rows = conn.execute(
         "SELECT * FROM grades WHERE active=1 AND json_extract(data, '$.gpa') IS NOT NULL"
     )
@@ -569,6 +708,50 @@ def gpa(conn: sqlite3.Connection = Depends(db)) -> Response:
     best = max(records, key=lambda g: (g["extra"].get("type") == "cumulative",
                                        g["extra"].get("weighted", True),
                                        g["extra"].get("calendar_id") or 0))
-    # Written by hand: serializing the float would drop trailing zeros (99.150 -> 99.15).
-    return Response(f"{best['gpa']:.{GPA_PLACES}f}", media_type="application/json",
-                    headers={"X-Last-Seen-At": best["last_seen_at"]})
+    return f"{best['gpa']:.{GPA_PLACES}f}", {"last_seen_at": best["last_seen_at"]}
+
+
+@_value("missing", "Number of recently overdue items", model=CountValue,
+        doc="How many items are past their deadline and not turned in (as in `GET "
+            "/items/missing`), counting only those due in the last `days` days.")
+def _missing_count(
+    days: int = Query(7, ge=1, le=3650, description="How many days back to count."),
+    conn: sqlite3.Connection = Depends(db),
+) -> tuple[str, dict]:
+    return _count(conn, _missing_sql("COUNT(*)", days))
+
+
+@_value("next", "Number of items due soon", model=CountValue,
+        doc="How many items `GET /items/upcoming` lists for the same `days`: unfinished and "
+            "due between now and `days` days from now.")
+def _next_count(
+    days: int = Query(7, ge=1, le=365, description="How many days ahead to count."),
+    conn: sqlite3.Connection = Depends(db),
+) -> tuple[str, dict]:
+    now = datetime.now(timezone.utc)
+    return _count(conn, _due_sql(now, now + timedelta(days=days), what="COUNT(*)"))
+
+
+@_value("status", "Number of failing sources", model=StatusValue,
+        doc="How many enabled sources' most recent run failed, so 0 means every source is "
+            "fine. `GET /sources` (behind the token) says which, and why. The JSON adds "
+            "`minutes`: how stale the stalest source is.")
+def _status(conn: sqlite3.Connection = Depends(db)) -> tuple[str, dict]:
+    enabled = [name for name, cls in REGISTRY.items() if cls.enabled]
+    marks = ",".join("?" * len(enabled))
+    failing = conn.execute(
+        f"""SELECT COUNT(*) FROM scrape_runs r
+            JOIN (SELECT source, MAX(run_id) AS run_id FROM scrape_runs GROUP BY source) last
+              USING (source, run_id)
+            WHERE r.ok=0 AND r.source IN ({marks})""", enabled,
+    ).fetchone()[0]
+    # Each enabled source's last successful full run (`last_success_at` in /sources).
+    updated = dict(conn.execute(
+        f"""SELECT source, MAX(finished_at) FROM scrape_runs
+            WHERE ok=1 AND partial IS NULL AND source IN ({marks}) GROUP BY source""", enabled,
+    ).fetchall())
+    minutes = None
+    if enabled and all(updated.get(name) for name in enabled):
+        oldest = datetime.fromisoformat(min(updated[name] for name in enabled))
+        minutes = int((datetime.now(timezone.utc) - oldest).total_seconds() // 60)
+    return str(failing), {"minutes": minutes}

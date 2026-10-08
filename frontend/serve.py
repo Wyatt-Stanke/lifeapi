@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import urllib.error
 import urllib.request
-from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -20,8 +19,6 @@ HERE = Path(__file__).resolve().parent
 INDEX = HERE / "index.html"
 # Standalone pages, outside the explorer's hash router. Re-read per request, like index.html.
 PAGES = {"/biggpa": HERE / "biggpa.html"}
-# API response headers passed through to the page, besides Content-Type.
-PASS_HEADERS = ("X-Last-Seen-At",)
 
 
 def make_handler(api: str, host_pages: dict[str, str]) -> type[BaseHTTPRequestHandler]:
@@ -73,19 +70,16 @@ def make_handler(api: str, host_pages: dict[str, str]) -> type[BaseHTTPRequestHa
                 req.add_header("Authorization", auth)
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
-                    self._send(resp.status, resp.headers.get("Content-Type", ""), resp.read(), resp.headers)
+                    self._send(resp.status, resp.headers.get("Content-Type", ""), resp.read())
             except urllib.error.HTTPError as e:
-                self._send(e.code, e.headers.get("Content-Type", ""), e.read(), e.headers)
+                self._send(e.code, e.headers.get("Content-Type", ""), e.read())
             except OSError as e:
                 self._send(502, "application/json", f'{{"detail": "API unreachable at {api}: {e}"}}'.encode())
 
-        def _send(self, status: int, ctype: str, body: bytes, upstream: Message | None = None) -> None:
+        def _send(self, status: int, ctype: str, body: bytes) -> None:
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
-            for name in PASS_HEADERS if upstream else ():
-                if (value := upstream.get(name)) is not None:
-                    self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 

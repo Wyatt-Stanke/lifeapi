@@ -124,6 +124,8 @@ async def run(only: list[str] | None = None, headless: bool | None = None,
             else:
                 log.debug("No sources due")  # debug: --due runs every minute
             return True
+        if pruned := storage.prune(conn):
+            log.info("Deleted %d scrape run(s) older than %d days", pruned, storage.KEEP_RUNS_DAYS)
         storage.start_sync_requests(conn, list(claimed))
         if claimed:
             log.info("Covering sync request(s) %s", ", ".join(map(str, claimed)))

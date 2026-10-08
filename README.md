@@ -48,7 +48,7 @@ Optional settings:
 | `LIFEAPI_BROWSER_CHANNEL` | `chrome` | Uses the installed Google Chrome. Set it to empty to use patchright's Chromium instead. |
 | `LIFEAPI_TIMEOUT_SCALE` | `3` | Multiplies the scraper's wait deadlines (page loads, selectors, logins). Raise it on a slow host. |
 | `LIFEAPI_SCRAPE_INTERVAL` | `7200` | Seconds between fetches of a source with no schedule set (see [Schedules](#schedules-and-partial-fetches)). The API reads it too, to report schedules, so give both the same value. |
-| `LIFEAPI_API_TOKEN` | unset | If set, the API requires `Authorization: Bearer <token>` on everything except `/health` and `/gpa`. |
+| `LIFEAPI_API_TOKEN` | unset | If set, the API requires the token (`Authorization: Bearer <token>`, or `?token=<token>`) on everything except `/health`, `/min/…` and `/json/…`. |
 | `LIFEAPI_REAUTH_TARGET` | unset | The server's SSH destination (e.g. `root@vps`), or `--local`. Fills in the sign-in command that `/sources` shows when a login gets stuck. See [Finishing a sign-in challenge](#finishing-a-sign-in-challenge). |
 | `LIFEAPI_DATA_DIR` | `./data` | Holds the DB, the browser profile and debug snapshots. |
 | `CLEVER_PORTAL_URL`, `INFINITE_CAMPUS_URL` | Jersey City | District-specific URLs. |
@@ -259,7 +259,8 @@ All list endpoints return only items still present at the source, unless you pas
 | `GET /items/{source}/{id}` | One item. |
 | `GET /courses` | Classes per source. |
 | `GET /grades` | Infinite Campus grades. Filters: `source`, `term`. |
-| `GET /gpa` | The cumulative weighted GPA as a bare number, a percentage always written to three decimal places (e.g. `99.150`). Weighting can lift it above 100. The `X-Last-Seen-At` header says when it was last scraped. Needs no token. |
+| `GET /history` | Every change to grades, GPAs, category totals, assignment scores and item statuses/scores, newest first, kept for good. Filters: `source`, `kind` (`grade`, `entry`, `item`), `id` (a grade's id includes its assignments), `gpa=true`, `since`, `limit`. |
+| `GET /min/{name}`, `GET /json/{name}` | One number, as plain text (`/min`) or JSON `{"value": …}` (`/json`). Needs no token. `name` is `gpa` (cumulative weighted GPA, a percentage always written to three decimal places, e.g. `99.150`, that weighting can lift above 100; the JSON adds `last_seen_at`), `missing` (items from `/items/missing` due in the last `?days=`, default 7), `next` (unfinished items due in the next `?days=`, default 7) or `status` (enabled sources whose last run failed; the JSON adds `minutes`, the age of the stalest source's last successful full run). |
 | `GET /sources` | Every source, whether it's enabled, its partial fetches, its schedule and next fetch, and its last run (`null` if never): when it ran, whether it was partial, whether it succeeded, the error, and counts. |
 | `PUT /sources/{source}/schedule` | Set how often a source is fetched: JSON `{"interval_minutes": 30}`, optionally with `"partial"` and `"full_every"`. See [Schedules](#schedules-and-partial-fetches). |
 | `DELETE /sources/{source}/schedule` | Back to the default schedule. |
@@ -268,6 +269,7 @@ All list endpoints return only items still present at the source, unless you pas
 | `DELETE /sync` | Clear the sync request list: deletes finished requests and cancels waiting ones. |
 | `GET /sync/{request_id}` | One sync request. |
 | `GET /health` | Liveness check. |
+| `GET /db` | The whole SQLite database as a file (a consistent snapshot, safe while the scraper runs). To copy the server's data to this machine, stop the local scraper and API, then: `curl -fH "Authorization: Bearer $TOKEN" https://<server>/api/db -o data/lifeapi.db.new && rm -f data/lifeapi.db-wal data/lifeapi.db-shm && mv data/lifeapi.db.new data/lifeapi.db` |
 
 An item looks like this:
 
@@ -331,3 +333,9 @@ JSON instead of the DOM. It's far more stable.
   list, because AP Classroom has no stable per-assessment URL before you start one.
 - **Infinite Campus**: as requested, only grades are collected (not IC's assignment list
   or attendance).
+- **Retention.** Courses, items and grades are never deleted, only marked inactive, but each
+  holds only its latest values. Every change to a grade-related value (grade letters and
+  percents, GPAs, category totals, assignment scores, item statuses and scores) is also kept in
+  `history` (`GET /history`) for good, which costs a few KB a week. Scrape runs and finished sync
+  requests are deleted after 180 days, and failed-run logs are kept for each source's last 20
+  runs. Compose rotates each container's log at 10 MB × 3.

@@ -6,6 +6,13 @@
 # profile and debug snapshots. Values below come from Coolify's environment variables, or
 # locally from `.env` next to this file.
 
+# Rotates each container's stdout log, which Docker's default json-file driver never does.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
 services:
   api:
     build: .
@@ -27,6 +34,7 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+    logging: *logging
 
   # The explorer UI. It proxies /api/* (and the docs at /api/docs) to the api service, so
   # this is the only service that needs a public domain. Enter the API token in the page.
@@ -47,6 +55,7 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+    logging: *logging
 
   # Scrapes each source on its schedule (set through the API; by default every
   # LIFEAPI_SCRAPE_INTERVAL seconds), checked every minute, plus whatever POST /sync asks
@@ -81,6 +90,7 @@ services:
       start_period: 30s
     stop_grace_period: 30s
     restart: unless-stopped
+    logging: *logging
 
 volumes:
   data:
