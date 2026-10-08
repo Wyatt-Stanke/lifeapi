@@ -276,6 +276,17 @@ restores the default. The explorer edits it in the Sync status page's Browser co
 - To test it without a real challenge, serve a page titled "Just a moment..." that embeds
   Turnstile with Cloudflare's test sitekey `3x00000000000000000000FF` (forces the
   checkbox) or `2x00000000000000000000AB` (never passes). Test keys work on localhost.
+- The server's datacenter IP is challenged on every VHL page and never cleared (runs
+  94–101), while VHL lets a home IP straight through. `LIFEAPI_PROXY` sends the hosts in
+  `LIFEAPI_PROXY_DOMAINS` (default VHL and Turnstile) through an upstream proxy, by way of
+  `proxy.relay()`, a local relay that `browser_context()` starts and points Chrome at
+  with a PAC script; everything else stays direct. The proxy in use (2026-10-07)
+  rotates the exit address per connection within an IPv6 /48 (Hurricane Electric),
+  reaches IPv6 only, and answers 407 without `Proxy-Authenticate`, which Chrome can't
+  answer. So the relay sends Basic credentials up front, and tunnels hosts with no IPv6
+  address that are on Cloudflare (VHL) to their Cloudflare IPv6 twin. Cloudflare picks
+  the site by SNI on any of its addresses. Other hosts without IPv6 (VHL's assets on
+  CloudFront) go direct. Never log the proxy URL: it holds the password.
 
 ### Frontend (`frontend/`)
 

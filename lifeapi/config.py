@@ -39,6 +39,14 @@ def timeout(ms: int) -> int:
 # runs follow it, and the API reports it, so both need the same value.
 SCRAPE_INTERVAL_MINUTES = max(1, round(int(os.getenv("LIFEAPI_SCRAPE_INTERVAL", "7200")) / 60))
 
+# An upstream proxy (http://user:password@host:port) for sites whose bot checks distrust
+# this host's IP: VHL's Cloudflare challenges a datacenter's. Only the hosts in
+# PROXY_DOMAINS, and their subdomains, go through it (see scraper/proxy.py).
+PROXY = os.getenv("LIFEAPI_PROXY") or None
+PROXY_DOMAINS = [d.strip().lstrip(".") for d in
+                 (os.getenv("LIFEAPI_PROXY_DOMAINS") or "vhlcentral.com,challenges.cloudflare.com").split(",")
+                 if d.strip()]
+
 # Optional bearer token for the API. If unset, the API is open (bind it to localhost).
 API_TOKEN = os.getenv("LIFEAPI_API_TOKEN") or None
 

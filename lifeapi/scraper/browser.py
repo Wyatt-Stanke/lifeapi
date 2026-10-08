@@ -8,6 +8,7 @@ keeps the number of fresh logins — and the chance of security challenges — l
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import re
@@ -22,6 +23,7 @@ from patchright.async_api import Error as PlaywrightError
 from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from .. import config
+from . import proxy
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +36,14 @@ async def browser_context(
     profile_dir.mkdir(parents=True, exist_ok=True)
     headless = config.HEADLESS if headless is None else headless
     display = virtual_display() if not headless and _no_display() else nullcontext()
-    async with display, async_playwright() as pw:
+    # LIFEAPI_PROXY: a few sites go through it, by way of a local relay (see proxy.py).
+    relay = proxy.relay(config.PROXY) if config.PROXY else nullcontext()
+    async with display, relay as relay_port, async_playwright() as pw:
+        proxy_args = []
+        if relay_port:
+            pac = proxy.pac(relay_port, config.PROXY_DOMAINS)
+            proxy_args = [f"--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,"
+                          f"{base64.b64encode(pac.encode()).decode()}"]
         # patchright's recommended stealth setup: real Chrome, persistent profile,
         # no custom viewport/user agent (those are fingerprintable).
         ctx = await pw.chromium.launch_persistent_context(
@@ -50,6 +59,7 @@ async def browser_context(
                 "--disable-renderer-backgrounding",
                 "--disable-background-timer-throttling",
                 "--disable-backgrounding-occluded-windows",
+                *proxy_args,
             ],
         )
         ctx.set_default_timeout(config.timeout(30_000))
