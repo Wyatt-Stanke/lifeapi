@@ -9,9 +9,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, BeforeValidator, Field
 
 from .. import models
-
-# Statuses that mean the student is finished with an item. The explorer's `DONE` mirrors this.
-DONE_STATUSES = ("turned_in", "completed", "graded", "done", "returned", "handed_in")
+from ..models import DONE_STATUSES  # re-exported: the API's finished statuses
 
 # Bookkeeping timestamps are stored as UTC ISO strings and returned verbatim.
 Timestamp = Annotated[str, Field(json_schema_extra={"format": "date-time"},
@@ -47,13 +45,31 @@ class UserMarks(BaseModel):
         description="The deadline the student set (`PUT /items/{source}/{item_id}/due`), in the "
                     "school's local time. It replaces `source_due_at` as the item's `due_at`.",
         examples=["2026-09-25T23:59:00-04:00"])
-    updated_at: Timestamp = Field(description="When the note or deadline was last changed (UTC).")
+    status: Literal["turned_in", "assigned"] | None = Field(
+        None, description="On a scraped item, the student's own status (`PUT "
+                          "/items/{source}/{item_id}/status`): `turned_in` or `assigned`. It's the "
+                          "item's `status` while `source_status` disagrees on whether the work is "
+                          "finished.")
+    updated_at: Timestamp = Field(description="When the note, deadline or status was last "
+                                              "changed (UTC).")
 
 
 class Item(models.Item, Tracked):
     __doc__ = models.Item.__doc__ + (
         " Items include assignments the student made in lifeapi from an announcement (see "
-        "`converted_from`), and carry the student's own note and deadline (`user`).")
+        "`converted_from`), and carry the student's own note, deadline and status (`user`).")
+
+    status: str | None = Field(
+        None,
+        description="The status that counts, in the platform's wording (snake_case): the "
+                    "student's (`user.status`: `turned_in` or `assigned`) while it disagrees with "
+                    "the platform's on whether the work is finished, else the platform's "
+                    "(`source_status`). Every filter and list uses this one.",
+        examples=["turned_in"])
+    source_status: str | None = Field(
+        description="The status as the platform has it, which lifeapi never changes. Null for "
+                    "assignments made in lifeapi. "
+                    + models.Item.model_fields["status"].description, examples=["assigned"])
 
     due_at: datetime | None = Field(
         None,
@@ -74,8 +90,8 @@ class Item(models.Item, Tracked):
                     "the `id` of the announcement it came from, in the same `source`. Their `id` "
                     "starts with `lifeapi-`, `url` links to the announcement, and `status` is "
                     "`assigned` or `done`, as the student sets it. Null for everything scraped.")
-    user: UserMarks | None = Field(description="The student's note and deadline for this item, "
-                                               "or null if they added neither.")
+    user: UserMarks | None = Field(description="The student's note, deadline and status for this "
+                                               "item, or null if they set none.")
 
 
 class Grade(models.Grade, Tracked):
@@ -303,6 +319,10 @@ class DueSettings(BaseModel):
     due_at: DueDate
 
 
+class StatusSettings(BaseModel):
+    turned_in: bool = Field(description="True: turned in (finished). False: not yet.")
+
+
 WorkKind = Literal["assignment", "quiz"]
 
 
@@ -435,7 +455,8 @@ class CommandRequest(BaseModel):
 class FieldChange(BaseModel):
     field: Literal["due_at", "note", "status"] = Field(
         description="`due_at`: the student's own deadline (`user.due_at`), where null means the "
-                    "platform's. `note`: the note. `status`: an assignment made in lifeapi.")
+                    "platform's. `note`: the note. `status`: the student's status (`user.status`), where "
+                    "null means the platform's, or an assignment made in lifeapi's own.")
     before: Any = Field(description="Its value before (`due_at` in the school's local time).")
     after: Any = Field(description="Its value after.")
 
@@ -539,6 +560,7 @@ announcements); those additions stay in lifeapi and never reach a platform.
 | Refresh a source more or less often | `PUT /sources/{{source}}/schedule` |
 | Remember something about an assignment | `PUT /items/{{source}}/{{item_id}}/note` |
 | I got an extension | `PUT /items/{{source}}/{{item_id}}/due` (`DELETE` undoes it) |
+| I turned it in (or haven't, whatever the platform says) | `PUT /items/{{source}}/{{item_id}}/status` with `{{"turned_in": true}}` (`DELETE` undoes it) |
 | An announcement says something is due | `GET /extra/drafts/{{source}}/{{item_id}}`, then `POST /extra/assignments` |
 | Mark one of those done | `PATCH /extra/assignments/{{source}}/{{item_id}}` with `{{"status": "done"}}` |
 | Do something said in words ("due friday 5pm", "push it back a day", "undo") | `POST /extra/commands` |
@@ -570,7 +592,8 @@ is in `extra` (documented per source on each schema).
 
 **Status.** `status` keeps each platform's own wording in snake_case (e.g. `assigned`,
 `missing`, `turned_in`, `turned_in_late`, `graded`, `completed`, `partial_late`). These count
-as finished: {", ".join(f"`{s}`" for s in DONE_STATUSES)}. `/items/upcoming` and
+as finished: {", ".join(f"`{s}`" for s in DONE_STATUSES)}. The student can mark an item
+turned in or not in lifeapi (see below), so `status` can differ from `source_status`. `/items/upcoming` and
 `/items/missing` already apply this, so prefer them over filtering `status` yourself.
 
 **Time.** `due_at` and `posted_at` are ISO 8601 with a UTC offset, in the school's local time.
@@ -585,11 +608,15 @@ When a platform gives only a date, deadlines become 23:59 and post dates 00:00 l
 scores) is also kept in `GET /history`, for good. Scrape runs (`GET /runs`) are kept for 180
 days.
 
-**The student's additions.** Any item can carry a note and the student's own deadline, in
-`user`. A changed deadline becomes the item's `due_at` everywhere (lists, filters, sorting,
+**The student's additions.** Any item can carry a note, the student's own deadline and
+their own status, in `user`. A changed deadline becomes the item's `due_at` everywhere (lists, filters, sorting,
 `/items/upcoming`, `/items/missing`, the `next` and `missing` counts), while `source_due_at`
 always keeps the platform's. An item with `user.due_at` set has a deadline the student chose;
-say so when it matters ("due Monday, moved from Friday"). Assignments made from an
+say so when it matters ("due Monday, moved from Friday"). Likewise `user.status` (`turned_in`
+or `assigned`) is the item's `status`, in every list and count, while the platform's
+(`source_status`) disagrees on whether it's finished: the student says they turned it in (on
+paper, say) and the platform hasn't caught up, or the reverse. Once the platform agrees, its
+own wording (`graded`) shows again. lifeapi never tells the platform. Assignments made from an
 announcement (`converted_from` set, `id` starting `lifeapi-`) live in the announcement's
 source and course, link to the announcement, have no `source_due_at`, and are `assigned`
 until the student marks them `done`. `GET /extra/drafts/{{source}}/{{item_id}}` suggests them:
@@ -600,8 +627,8 @@ model, so check its suggestions before saving them; they're meant to fill a form
 
 **Commands.** `POST /extra/commands` takes an item (by `source` and `item_id`, or by its link)
 and a command in words: due dates (`set the due date to today at 11:59 PM`, `due at 11:59`,
-`due oct 8 3 o'clock`, `push it back a day`, `reset the due date`), notes (`note: …`), `done`,
-`undo`. What isn't said is kept (`due at 5pm` keeps the date), a time without am/pm is read
+`due oct 8 3 o'clock`, `push it back a day`, `reset the due date`), notes (`note: …`), `done`
+and `not done` (`turned in`, `assigned`…), `undo`. What isn't said is kept (`due at 5pm` keeps the date), a time without am/pm is read
 the way a student would mean it, and the answer says what was done and how anything
 ambiguous was read; show `summary` and `notes` to the person. Every command can be undone,
 however old (`POST /extra/commands/{{action_id}}/undo`, or the command `undo`).

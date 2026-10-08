@@ -165,6 +165,9 @@ class GradeEntry(BaseModel):
 # can't keep the trailing zero, so anything that writes a GPA out as text pads it to this.
 GPA_PLACES = 3
 
+# Statuses that mean the student is finished with an item. The explorer's `DONE` mirrors this.
+DONE_STATUSES = ("turned_in", "completed", "graded", "done", "returned", "handed_in")
+
 
 class Grade(BaseModel):
     """A course grade for one grading task in one term (e.g. "MP1 / MARKING PERIOD"). There is

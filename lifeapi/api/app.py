@@ -2,7 +2,8 @@
 SQLite database the scraper writes, except for queueing and clearing manual sync requests
 (`/sync`) and setting fetch schedules (`/sources/{source}/schedule`) and browser settings
 (`/sources/{source}/browser`), which the scraper picks up, and the student's own additions:
-notes and deadlines on items (`/items/{source}/{item_id}/note`, `/due`) and assignments made
+notes, deadlines and statuses on items (`/items/{source}/{item_id}/note`, `/due`, `/status`)
+and assignments made
 from announcements (`/extra/...`), in tables the scraper never writes.
 
 The OpenAPI spec is meant to stand on its own (handed to a person or an agent without the
@@ -36,7 +37,8 @@ from .schemas import (
     DESCRIPTION, DONE_STATUSES, TAGS, Action, AssignmentEdit, Browser, BrowserSettings,
     ClearedSyncRequests, CommandRequest, CommandResult, ConversionDraft, CountValue, Course,
     DueSettings, Error, GpaValue, Grade, Health, HistoryRecord, Item, NewAssignment, NoteSettings,
-    Run, RunDetail, Schedule, ScheduleSettings, SourceStatus, StatusValue, SyncRequest, errors,
+    Run, RunDetail, Schedule, ScheduleSettings, SourceStatus, StatusSettings, StatusValue,
+    SyncRequest, errors,
 )
 
 app = FastAPI(
@@ -598,7 +600,7 @@ def item(source: str = ITEM_SOURCE, item_id: str = ITEM_ID,
     return storage.item_to_dict(_item_row(conn, source, item_id))
 
 
-# Notes and deadlines write, so like /sync they open their own read-write connection. They're
+# Notes, deadlines and statuses write, so like /sync they open their own read-write connection. They're
 # kept apart from the scraped record (in item_marks), so a scrape never overwrites them.
 
 def _mark(source: str, item_id: str, **fields: str | None) -> dict[str, Any]:
@@ -654,6 +656,43 @@ def reset_due(source: str = ITEM_SOURCE, item_id: str = ITEM_ID) -> Item:
     An assignment made in lifeapi has no platform deadline, so it's then left without one.
     Returns the item."""
     return _mark(source, item_id, due_at=None)
+
+
+@app.put("/items/{source}/{item_id}/status", dependencies=[Auth], tags=["items"],
+         operation_id="setItemStatus", summary="Mark an item turned in or not",
+         responses=errors(401, 404, 409))
+def set_status(settings: StatusSettings, source: str = ITEM_SOURCE, item_id: str = ITEM_ID) -> Item:
+    """Marks the item turned in (`{"turned_in": true}`) or not, in lifeapi only: the platform
+    isn't told. On a scraped item, `status` becomes `turned_in` or `assigned` (`user.status`)
+    while the platform's (`source_status`) says otherwise, so it leaves or joins
+    `/items/upcoming` and `/items/missing`; once the platform agrees, its own wording (`graded`,
+    say) shows again. Marking it the way the platform already has it drops the student's
+    status. An assignment made in lifeapi becomes `done` or `assigned`. 409 for an
+    announcement or material. Returns the item. The command `done` (`POST /extra/commands`)
+    does the same, undoably."""
+    with storage.connect() as conn:
+        try:
+            plan = commands.status_plan(storage.item_to_dict(_item_row(conn, source, item_id)),
+                                        settings.turned_in)
+        except commands.CommandError as e:
+            raise HTTPException(e.status, e.message)
+        storage.apply_fields(conn, source, item_id, plan.changes)
+        conn.commit()
+        return storage.item_to_dict(storage.get_item(conn, source, item_id))
+
+
+@app.delete("/items/{source}/{item_id}/status", dependencies=[Auth], tags=["items"],
+            operation_id="resetItemStatus", summary="Restore an item's own status",
+            responses=errors(401, 404, 409))
+def reset_status(source: str = ITEM_SOURCE, item_id: str = ITEM_ID) -> Item:
+    """Drops the student's status, so `status` is the platform's again (`source_status`). 409
+    for an assignment made in lifeapi, whose status is only ever the student's. Returns the
+    item."""
+    with storage.connect() as conn:
+        if _item_row(conn, source, item_id)["converted_from"] is not None:
+            raise HTTPException(409, "It was made in lifeapi, so it has no platform status to go "
+                                     "back to; mark it turned in or not instead.")
+    return _mark(source, item_id, status=None)
 
 
 @app.get("/grades", dependencies=[Auth], tags=["grades"], operation_id="listGrades",
@@ -851,7 +890,8 @@ def _custom(conn: sqlite3.Connection, source: str, item_id: str) -> sqlite3.Row:
     row = _item_row(conn, source, item_id)
     if row["converted_from"] is None:
         raise HTTPException(409, "That item comes from its platform, not lifeapi, so it can't be "
-                                 "edited here (its note and deadline can: /items/{source}/{item_id}/note, /due)")
+                                 "edited here (its note, deadline and status can: "
+                                 "/items/{source}/{item_id}/note, /due, /status)")
     return row
 
 
@@ -1032,7 +1072,11 @@ def _undo(conn: sqlite3.Connection, target: sqlite3.Row, command: str,
     if "note" in restore:
         parts.append(f"note back to {commands.quote(restore['note'])}" if restore["note"] else "note removed")
     if "status" in restore:
-        parts.append("marked done" if restore["status"] == "done" else "marked not done")
+        status = restore["status"]
+        parts.append(f"status back to {commands.source_name(source)}'s, {commands.label(after['status'])}"
+                     if status is None else "marked done" if status == "done"
+                     else "marked turned in" if status == "turned_in"
+                     else "marked not turned in" if after["converted_from"] is None else "marked not done")
     notes = ["It had been changed since, so that later change is replaced too."] if current != expected else []
     action_id = storage.record_action(
         conn, source, item_id, item["title"], command,
@@ -1055,9 +1099,11 @@ def run_command(body: CommandRequest) -> CommandResult:
     and typos and spoken numbers are fine. `summary` and `notes` are written to show the person,
     including how anything ambiguous was read. Every command can be undone, however old: `undo`
     as a command undoes this item's latest, and `POST /extra/commands/{action_id}/undo` any one.
-    A command that changes nothing (it's already so) returns `action_id: null`. 400 when it
-    isn't understood, with what can be said; 409 when it can't apply (marking a scraped item
-    done: its platform decides that; moving a deadline it doesn't have)."""
+    `done` (`turned in`, `submitted`…) and `not done` (`assigned`, `unsubmit`…) mark it in
+    lifeapi only, as `PUT /items/{source}/{item_id}/status` does. A command that changes nothing
+    (it's already so) returns `action_id: null`. 400 when it isn't understood, with what can be
+    said; 409 when it can't apply (moving a deadline it doesn't have, marking an announcement or
+    material done)."""
     command, url = body.command, body.url
     if url and "##" in url:
         url, _, spoken = url.partition("##")

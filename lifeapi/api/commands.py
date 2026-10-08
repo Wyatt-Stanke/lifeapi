@@ -17,13 +17,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from ..models import DONE_STATUSES
 from ..scraper.dates import LOCAL_TZ
 from .when import DEFAULT_TIME, normalize, parse
 
 SOURCE_NAMES = {"google_classroom": "Google Classroom", "ap_classroom": "AP Classroom",
                 "vhl": "VHL Central", "infinite_campus": "Infinite Campus", "albert": "Albert"}
 EXAMPLES = ("“due friday 5pm”, “due at 11:59 pm”, “push it back a day”, “reset the due date”, "
-            "“note: bring a calculator”, “done” or “undo”")
+            "“note: bring a calculator”, “done”, “not done” or “undo”")
 UNDO, REDO = "undo", "redo"
 
 
@@ -36,7 +37,9 @@ class CommandError(Exception):
 
 @dataclass
 class Plan:
-    changes: dict[str, Any]  # "due_at" (the student's deadline, UTC ISO; None: the source's), "note", "status"
+    # "due_at" (the student's deadline, UTC ISO; None: the source's), "note", "status" (a custom
+    # item's own; on a scraped one the student's, `turned_in` or `assigned`, None: the source's)
+    changes: dict[str, Any]
     summary: str
     notes: list[str] = field(default_factory=list)
 
@@ -89,7 +92,7 @@ _DONE_RE = re.compile(r"(?:mark(?:\s+(?:it|this|that))?(?:\s+as)?\s+|it'?s\s+|i'
                       r"|i\s+(?:did|finished|submitted|turned\s+in|handed\s+in)\s+it", re.I)
 _NOT_DONE_RE = re.compile(r"(?:mark(?:\s+(?:it|this|that))?(?:\s+as)?\s+|it'?s\s+|set\s+(?:it\s+)?(?:to\s+)?)?"
                           r"(?:not\s+(?:yet\s+)?(?:done|finished|complete(?:d)?|turned\s+in|submitted)|undone|"
-                          r"unfinished|incomplete|reopen(?:\s+it)?|to\s*-?do|assigned)", re.I)
+                          r"unfinished|incomplete|unsubmit(?:ted)?|reopen(?:\s+it)?|to\s*-?do|assigned)", re.I)
 _DUE_WORDS = r"(?:due(?:\s+date)?|deadline|date)"
 _RESET_RE = re.compile(
     rf"(?:reset|restore|revert|go\s+back\s+to|put\s+back|back\s+to|use)\s+(?:the\s+|its\s+|my\s+)?"
@@ -125,9 +128,9 @@ def interpret(command: str, item: dict[str, Any], now: datetime,
     if m := _NOTE_RE.match(raw):
         return _note(item, m.group("text").strip(), append=bool(m.group("add")))
     if _NOT_DONE_RE.fullmatch(raw):
-        return _status(item, "assigned")
+        return status_plan(item, done=False)
     if _DONE_RE.fullmatch(raw):
-        return _status(item, "done")
+        return status_plan(item, done=True)
     text = normalize(raw)
     if _REMOVE_RE.fullmatch(text) or _RESET_RE.fullmatch(text):
         return _reset_due(item, now, remove=bool(_REMOVE_RE.fullmatch(text)))
@@ -154,14 +157,33 @@ def _note(item: dict[str, Any], text: str | None, append: bool) -> Plan:
     return Plan({"note": text}, f"Note set to {quote(text)}.")
 
 
-def _status(item: dict[str, Any], status: str) -> Plan:
-    if item.get("converted_from") is None:
-        name = source_name(item["source"])
-        raise CommandError(409, f"{name} decides whether this is done, so lifeapi can't change it. "
-                                f"Turn it in on {name}, and the next sync picks that up.")
-    if item.get("status") == status:
-        return Plan({}, "It's already marked done." if status == "done" else "It's already not done.")
-    return Plan({"status": status}, "Marked done." if status == "done" else "Marked not done.")
+def label(status: str | None) -> str:
+    return (status or "no status").replace("_", " ")
+
+
+def status_plan(item: dict[str, Any], done: bool) -> Plan:
+    """Mark `item` finished or not. A custom item's status is its own (`done`/`assigned`). A
+    scraped one's stays the platform's in `source_status`; the student's (`turned_in`/
+    `assigned`) is kept only while it disagrees with that, so it's cleared when they agree."""
+    if item.get("kind") in ("announcement", "material"):
+        raise CommandError(409, f"{item['kind'].capitalize()}s aren't turned in.")
+    if item.get("converted_from") is not None:
+        status = "done" if done else "assigned"
+        if item.get("status") == status:
+            return Plan({}, "It's already marked done." if done else "It's already not done.")
+        return Plan({"status": status}, "Marked done." if done else "Marked not done.")
+    name = source_name(item["source"])
+    theirs = item.get("source_status")
+    mine = (item.get("user") or {}).get("status")
+    if (theirs in DONE_STATUSES) == done:
+        if mine is None:
+            return Plan({}, f"{name} already has it as {label(theirs)}.")
+        return Plan({"status": None}, f"Status back to {name}'s: {label(theirs)}.")
+    status = "turned_in" if done else "assigned"
+    if mine == status:
+        return Plan({}, "It's already marked turned in." if done else "It's already marked not turned in.")
+    return Plan({"status": status}, "Marked turned in." if done else "Marked not turned in.",
+                [f"Only in lifeapi: {name} still has it as {label(theirs)}."])
 
 
 def _reset_due(item: dict[str, Any], now: datetime, remove: bool) -> Plan:
