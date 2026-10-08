@@ -12,6 +12,7 @@ headless ones; both use the same profile, so sign-ins carry over."""
 
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import logging
 import re
@@ -21,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Iterator
 
 from .. import config, storage
-from ..models import Item
+from ..models import Item, ScrapeResult
 from . import sources  # noqa: F401  (registers all sources)
 from .auth.google import LoginError
 from .base import REGISTRY, SiteUnavailable, Source
@@ -156,6 +157,43 @@ async def run(only: list[str] | None = None, headless: bool | None = None,
     return not errors
 
 
+class SourceTimeout(TimeoutError):
+    """A source's scrape ran past `config.SOURCE_TIMEOUT` and was stopped."""
+
+
+# How long a stopped scrape gets to clean up (close its tabs) before the run moves on
+# without it. Cleanup can hang on the same stuck page that made it overrun.
+CANCEL_GRACE_SECONDS = 30
+
+
+async def _scrape(source: Source) -> ScrapeResult:
+    """`source.scrape()`, stopped after `config.SOURCE_TIMEOUT` seconds. Without a limit, one
+    call stuck on a hung page (Playwright's `evaluate` has no deadline of its own) holds the
+    run, and every source after it, for hours, and leaves no trail."""
+    task = asyncio.ensure_future(source.scrape())
+    try:
+        done, _ = await asyncio.wait({task}, timeout=config.SOURCE_TIMEOUT)
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+    if done:
+        return task.result()
+    steps = list(source.active_steps)  # before cancelling unwinds them
+    task.cancel()
+    await asyncio.wait({task}, timeout=CANCEL_GRACE_SECONDS)
+    if not task.done():
+        log.warning("%s didn't stop within %d s of being cancelled; moving on without it",
+                    source.name, CANCEL_GRACE_SECONDS)
+    # Whatever the stopped task ends with (CancelledError, or an error from its cleanup) has
+    # nowhere to go. Retrieve it so asyncio doesn't log it as never retrieved.
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    error = SourceTimeout(f"{source.name} was still running after {config.SOURCE_TIMEOUT // 60} "
+                          "min, so it was stopped (LIFEAPI_SOURCE_TIMEOUT)")
+    for what in reversed(steps):  # innermost first, like Source.step's notes
+        error.add_note(f"while {what}")
+    raise error
+
+
 def _chain(e: BaseException | None) -> Iterator[BaseException]:
     """`e`, then what caused it, and so on."""
     seen = set()
@@ -205,7 +243,7 @@ async def _run_one(conn, ctx, cls: type[Source], partial: str | None = None) -> 
         try:
             source = cls(ctx, previous=_previous_items(conn, cls.name), partial=partial,
                          last_run_at=storage.last_full_run(conn, cls.name))
-            result = await source.scrape()
+            result = await _scrape(source)
         except Exception as e:
             error = describe_error(e, trail.last_url)
             failure = failure_kind(e)

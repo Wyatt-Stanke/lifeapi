@@ -11,6 +11,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import re
 import secrets
 import shlex
 import sqlite3
@@ -29,7 +30,8 @@ from ..scraper import sources as _sources  # noqa: F401  (registers all sources)
 from ..scraper.base import REGISTRY, Source
 from .schemas import (
     DESCRIPTION, DONE_STATUSES, TAGS, Browser, BrowserSettings, ClearedSyncRequests,
-    CountValue, Course, Error, GpaValue, Grade, Health, HistoryRecord, Item, Run, RunDetail, Schedule,
+    CountValue, Course, DebugSnapshot, Error, GpaValue, Grade, Health, HistoryRecord, Item, Run,
+    RunDetail, Schedule,
     ScheduleSettings, SourceStatus, StatusValue, SyncRequest, errors,
 )
 
@@ -361,11 +363,43 @@ def _run(conn: sqlite3.Connection, run_id: int) -> sqlite3.Row:
     return row
 
 
+# A debug snapshot's file (browser.dump_debug): its name is already reduced to these.
+DEBUG_FILE = re.compile(r"[\w.-]+\.(png|html)")
+# The line dump_debug logs, which a failed run's trail keeps.
+SNAPSHOT_SAVED = re.compile(r"Saved debug snapshot to (?:\S*/)?([\w.-]+)\.\{png,html\}")
+
+
+def _snapshots() -> dict[str, dict[str, Any]]:
+    """Debug snapshots on disk by name, newest first."""
+    found: dict[str, list[os.DirEntry]] = {}
+    try:
+        with os.scandir(config.DEBUG_DIR) as entries:
+            for e in entries:
+                if DEBUG_FILE.fullmatch(e.name) and e.is_file():
+                    found.setdefault(e.name.rsplit(".", 1)[0], []).append(e)
+    except FileNotFoundError:  # nothing saved yet
+        return {}
+    snapshots = {
+        name: {
+            "name": name,
+            "saved_at": datetime.fromtimestamp(max(f.stat().st_mtime for f in files), timezone.utc)
+                                .isoformat(timespec="seconds"),
+            "files": sorted((f.name for f in files), key=lambda n: not n.endswith(".png")),
+        }
+        for name, files in found.items()
+    }
+    return dict(sorted(snapshots.items(), key=lambda kv: kv[1]["saved_at"], reverse=True))
+
+
 @app.get("/runs/{run_id}", dependencies=[Auth], tags=["status"], operation_id="getRun",
          summary="Get one scrape run with its log", responses=errors(401, 404, 503))
 def run(run_id: int = RUN_ID, conn: sqlite3.Connection = Depends(db)) -> RunDetail:
-    """One scrape run, including `log` for a failed run."""
-    return storage.run_to_dict(_run(conn, run_id), with_log=True)
+    """One scrape run, including `log` and `snapshots` for a failed run."""
+    out = storage.run_to_dict(_run(conn, run_id), with_log=True)
+    saved = dict.fromkeys(SNAPSHOT_SAVED.findall(out["log"] or ""))
+    on_disk = _snapshots() if saved else {}
+    out["snapshots"] = [on_disk[n] for n in saved if n in on_disk]
+    return out
 
 
 @app.get("/runs/{run_id}/log", dependencies=[Auth], tags=["status"], operation_id="getRunLog",
@@ -379,6 +413,32 @@ def run_log(run_id: int = RUN_ID, conn: sqlite3.Connection = Depends(db)) -> str
     if log is None:
         raise HTTPException(404, "No log for this run (only recent failed runs keep one)")
     return log
+
+
+@app.get("/debug", dependencies=[Auth], tags=["status"], operation_id="listDebugSnapshots",
+         summary="List debug snapshots", responses=errors(401))
+def debug_snapshots() -> list[DebugSnapshot]:
+    """Screenshots and HTML the scraper saved when a run failed on a page it didn't expect,
+    newest first. Fetch one's files with `GET /debug/{file}`. A failed run's own are in its
+    `snapshots` (`GET /runs/{run_id}`)."""
+    return list(_snapshots().values())
+
+
+@app.get("/debug/{file}", dependencies=[Auth], tags=["status"], operation_id="getDebugFile",
+         summary="Get a debug snapshot's screenshot or HTML", response_class=FileResponse,
+         responses={200: {"content": {"image/png": {"schema": {"type": "string", "format": "binary"}},
+                                      "text/plain": {}}},
+                    **errors(401, 404)})
+def debug_file(file: str = Path(description="A file from a snapshot's `files`, e.g. "
+                                            "`collegeboard_login_stuck.png`.")) -> FileResponse:
+    """A snapshot's screenshot (`.png`, as `image/png`) or the page's HTML (`.html`, as
+    `text/plain`: it's someone else's page, and served as HTML its scripts would run on this
+    site)."""
+    path = config.DEBUG_DIR / file
+    if not DEBUG_FILE.fullmatch(file) or not path.is_file():
+        raise HTTPException(404, "No such debug file")
+    media = "image/png" if file.endswith(".png") else "text/plain; charset=utf-8"
+    return FileResponse(path, media_type=media)
 
 
 @app.get("/db", dependencies=[Auth], tags=["status"], operation_id="downloadDatabase",

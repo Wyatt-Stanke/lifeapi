@@ -63,6 +63,9 @@ class Source(ABC):
         # source can pace periodic re-reads to however often it actually runs.
         self.last_run_at = last_run_at
         self.log = logging.getLogger(f"lifeapi.source.{self.name}")
+        # Steps in progress, outermost first (tasks running in parallel interleave), so a run
+        # stopped from outside (the runner's time limit) can still say what it was doing.
+        self.active_steps: list[str] = []
 
     @abstractmethod
     async def scrape(self) -> ScrapeResult:
@@ -74,11 +77,14 @@ class Source(ABC):
         An exception escaping it gets a "while <what>" note, so a bare Playwright timeout
         says what it was in the middle of. Steps nest; the innermost note comes first."""
         self.log.debug("Step: %s", what)
+        self.active_steps.append(what)
         try:
             yield
         except Exception as e:
             e.add_note(f"while {what}")
             raise
+        finally:
+            self.active_steps.remove(what)
 
     async def new_page(self) -> Page:
         return await self.context.new_page()

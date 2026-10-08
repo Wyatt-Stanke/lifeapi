@@ -76,12 +76,30 @@ class Run(LastRun):
     source: str = Field(description="The source this run scraped.", examples=["google_classroom"])
 
 
+class DebugSnapshot(BaseModel):
+    """A screenshot and the HTML of a page the scraper didn't expect, saved when a run failed
+    on it. Each is named for where it happened, and the next snapshot with the same name
+    replaces it."""
+
+    name: str = Field(description="What the scraper was doing, e.g. "
+                                  "`collegeboard_login_stuck` or `google_classroom_<course id>`.",
+                      examples=["collegeboard_login_stuck"])
+    saved_at: Timestamp = Field(description="When it was saved (UTC).")
+    files: list[str] = Field(description="Its files, for `GET /debug/{file}`: `<name>.png` (the "
+                                         "screenshot) and `<name>.html` (the page's HTML).",
+                             examples=[["collegeboard_login_stuck.png", "collegeboard_login_stuck.html"]])
+
+
 class RunDetail(Run):
     log: str | None = Field(description="For a failed run: the error, a timestamped trail of "
                                         "the scraper's log lines and browser activity (tabs, "
                                         "navigations, XHR responses, HTTP errors, failed "
                                         "requests; URLs only, with secrets masked), and the "
                                         "traceback. Null otherwise.")
+    snapshots: list[DebugSnapshot] = Field(
+        description="Debug snapshots the run saved that still exist. A snapshot is replaced by "
+                    "the next one with the same name, so one whose `saved_at` is after this "
+                    "run's `finished_at` is from a later run.")
 
 
 class PartialFetch(BaseModel):
@@ -342,6 +360,9 @@ hidden from every list unless you pass `include_inactive=true`. If a source's sc
 its previous data stays as it was; check `GET /sources` before trusting stale data. A failed
 run's `failure` says whose problem it is: `site` (the site was down; the next run retries),
 `login` (a person has to finish a sign-in) or `scraper` (the scraper needs fixing).
+When a run fails on a page the scraper didn't expect, it saves a screenshot and the page's
+HTML: `GET /debug` lists them, `GET /debug/{{file}}` returns one, and a failed run's
+`snapshots` (`GET /runs/{{run_id}}`) are the ones it saved.
 
 ## Schedules
 

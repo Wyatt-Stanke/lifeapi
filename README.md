@@ -47,6 +47,7 @@ Optional settings:
 | `LIFEAPI_HEADLESS` | `1` | `0` shows the browser window for every source. Otherwise each source follows its own setting (see [Headed sources](#headed-sources)). |
 | `LIFEAPI_BROWSER_CHANNEL` | `chrome` | Uses the installed Google Chrome. Set it to empty to use patchright's Chromium instead. |
 | `LIFEAPI_TIMEOUT_SCALE` | `3` | Multiplies the scraper's wait deadlines (page loads, selectors, logins). Raise it on a slow host. |
+| `LIFEAPI_SOURCE_TIMEOUT` | `1800` | Seconds one source's scrape may take. A source still running after that is stopped and recorded as failed, so a hung page can't hold up the others. |
 | `LIFEAPI_SCRAPE_INTERVAL` | `7200` | Seconds between fetches of a source with no schedule set (see [Schedules](#schedules-and-partial-fetches)). The API reads it too, to report schedules, so give both the same value. |
 | `LIFEAPI_API_TOKEN` | unset | If set, the API requires the token (`Authorization: Bearer <token>`, or `?token=<token>`) on everything except `/health`, `/min/…` and `/json/…`. |
 | `LIFEAPI_REAUTH_TARGET` | unset | The server's SSH destination (e.g. `root@vps`), or `--local`. Fills in the sign-in command that `/sources` shows when a login gets stuck. See [Finishing a sign-in challenge](#finishing-a-sign-in-challenge). |
@@ -70,7 +71,8 @@ Optional settings:
 Each source runs on its own. If one fails (a login challenge, or a site redesign), the
 others still update, the failed source keeps its last good data, and `/sources` shows the
 error. When a page doesn't look as expected, the scraper saves a screenshot and the HTML to
-`data/debug/`.
+`data/debug/`. The API serves them (`GET /debug`), and the explorer's Sync status page links
+to them.
 
 **First run and login challenges.** Sessions are kept in `data/browser-profile/`, so the
 scraper rarely has to sign in from scratch. If Google or College Board ever asks for extra
@@ -168,7 +170,7 @@ patchright's Chromium instead, because Chrome isn't published for Linux arm64.
 
 Environment variables: `GOOGLE_USERNAME`, `GOOGLE_PASSWORD`, `COLLEGEBOARD_USERNAME`,
 `COLLEGEBOARD_PASSWORD` and `LIFEAPI_API_TOKEN` are required. Compose refuses to start
-without them. `LIFEAPI_SCRAPE_INTERVAL`, `LIFEAPI_SCRAPE_MAX_RUN`, `LIFEAPI_SYNC_POLL`, `LIFEAPI_TIMEOUT_SCALE`,
+without them. `LIFEAPI_SCRAPE_INTERVAL`, `LIFEAPI_SCRAPE_MAX_RUN`, `LIFEAPI_SOURCE_TIMEOUT`, `LIFEAPI_SYNC_POLL`, `LIFEAPI_TIMEOUT_SCALE`,
 `CLEVER_PORTAL_URL`, `INFINITE_CAMPUS_URL` and `LIFEAPI_REAUTH_TARGET` are optional.
 `LIFEAPI_PROXY` (`http://user:password@host:port`, optional) sends the sites in
 `LIFEAPI_PROXY_DOMAINS` (default `vhlcentral.com,challenges.cloudflare.com`) through a proxy,
@@ -272,6 +274,9 @@ All list endpoints return only items still present at the source, unless you pas
 | `GET /sync` | Recent sync requests, newest first. `status`: `pending`, `running`, `done` or `failed` (with `error`). |
 | `DELETE /sync` | Clear the sync request list: deletes finished requests and cancels waiting ones. |
 | `GET /sync/{request_id}` | One sync request. |
+| `GET /runs`, `GET /runs/{run_id}` | Recent scrape runs, and one run with its log and the debug snapshots it saved (failed runs only). |
+| `GET /debug` | Debug snapshots: the screenshot and HTML the scraper saved when a run failed on a page it didn't expect, newest first. Each is replaced by the next with the same name. |
+| `GET /debug/{file}` | One snapshot file: `<name>.png` as an image, `<name>.html` as plain text (so the captured page's scripts never run on this site). |
 | `GET /health` | Liveness check. |
 | `GET /db` | The whole SQLite database as a file (a consistent snapshot, safe while the scraper runs). To copy the server's data to this machine, stop the local scraper and API, then: `curl -fH "Authorization: Bearer $TOKEN" https://<server>/api/db -o data/lifeapi.db.new && rm -f data/lifeapi.db-wal data/lifeapi.db-shm && mv data/lifeapi.db.new data/lifeapi.db` |
 

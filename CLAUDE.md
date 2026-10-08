@@ -79,7 +79,15 @@ College Board API responses contain access tokens, so delete scratch captures wh
   rejects on any aborted navigation (`net::ERR_ABORTED; maybe frame was detached?`), even
   one the site cancels itself before redirecting elsewhere, as College Board's does.
 - `browser.dump_debug()` writes a screenshot and HTML to `data/debug/`. Sources call it
-  before re-raising on unexpected pages.
+  before re-raising on unexpected pages. The name is fixed per place (no run id), so the next
+  failure there replaces it. The API serves them (`GET /debug`, `GET /debug/{file}`), and
+  `GET /runs/{id}` lists a run's by finding the "Saved debug snapshot" lines in its trail.
+- Time limit: `runner._scrape` stops a source still running after `LIFEAPI_SOURCE_TIMEOUT`
+  seconds (default 1800) and records a `SourceTimeout`, with its trail and the steps in
+  progress (`Source.active_steps`). Before it existed, a Classroom run stuck in a call with no
+  deadline of its own (`page.evaluate`) held every source for 7 hours and left no trail. A
+  stopped scrape gets `CANCEL_GRACE_SECONDS` to close its tabs, then the run moves on
+  without it, and `browser_context()` bounds its own `ctx.close()` for the same reason.
 - Error context: wrap phases in `with self.step("reading X"):`. An exception escaping it
   gets a "while reading X" note, which `runner.describe_error` puts in
   `scrape_runs.error` with any chained cause and the last page URL. Bare Playwright
@@ -112,7 +120,14 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   instead: a Student/Educator chooser that never redirects, whose Student link signs in to
   AP Students. `_load_app` goes from there to `SIGN_IN`, the sign-in the app normally
   redirects to. A 401 (expired token: the API answers 422 for a malformed one)
-  loads the app again once for a fresh token.
+  loads the app again once for a fresh token. A "Failed to fetch" while the page is still
+  on the app is retried in place first (`MAX_REFETCHES`). On the server, everything in flight
+  in the tab sometimes gets cancelled at once, about when the app settles on `/subjects`
+  (runs 118, 139). Loading the app again walks straight back into it.
+  On the server, College Board's sign-in (behind Akamai) fails headless from the datacenter IP:
+  the `mslogin…/auth/url` or `/auth/exchange` request is cancelled, and the page lands on
+  `account.collegeboard.org/login/error`. It passes headed (run 139), so set the source to
+  headed there.
 - **Infinite Campus**: after SSO, calls `/campus/resources/portal/grades` and
   `/grades/detail/<sectionID>` with `page.request`, plus `/campus/api/campus/grading/gpas/my/gpa`
   for overall GPAs (this district shows only a weighted cumulative GPA, as a percentage that weighting can push past 100). The session cookie doesn't persist
@@ -198,7 +213,10 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   requests and schedules, and list never-run sources and their partials in `/sources`), but
   never opens a browser.
   `GET /db` returns the whole database (SQLite backup API into a temp file, deleted after
-  sending), for copying the server's data to a local install.
+  sending), for copying the server's data to a local install. `GET /debug/{file}` serves a
+  snapshot's HTML as `text/plain`: it's a third-party page, and served as HTML its scripts
+  would run on the API's origin (where the explorer keeps the token), and `serve.py` drops
+  any other header that could sandbox it.
 - The OpenAPI spec (`/openapi.json`) is meant to be handed to a person or agent on its own,
   so it's the API's documentation. The overview (common questions, sources, ids, statuses,
   time zones) is `DESCRIPTION` in `api/schemas.py`. Field docs are the `Field(description=)`s
@@ -336,6 +354,10 @@ API access stays at `/api/docs`.
   `#/course/<source>/<id>`, `#/grade/<source>/<id>` and so on, so pages can be
   bookmarked. Views fetch in parallel. That relies on the API's `check_same_thread=False`
   (see above).
+- Debug snapshots: a failed run's log box and the Sync status page's "Debug snapshots" list
+  open files with `openDebugFile()`. It fetches with the token in a header and opens a `blob:`
+  URL, so the token never goes in a URL. It opens the tab before the fetch, because a tab
+  opened after an `await` gets popup-blocked.
 - Display helpers live in one place: `SOURCE_NAMES` (add new sources there), `label()`
   for statuses, `relative()`/`when()` for dates, and `DONE`, which mirrors the API's
   finished statuses.

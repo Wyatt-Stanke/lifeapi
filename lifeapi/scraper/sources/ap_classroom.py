@@ -39,6 +39,11 @@ STATUSES = ("assigned", "upcoming", "completed")
 # How often one load of the app may send us to the College Board sign-in. On the server it
 # has looped: sign in, load the app, sent back to the sign-in.
 MAX_SIGN_INS = 2
+# How often one API call is retried in place after the browser cancelled it ("Failed to
+# fetch") while the page stayed on the app. On the server, every request in flight in the
+# tab is sometimes cancelled at once, about when the app settles on /subjects (runs 118,
+# 139). The page and its token are fine; loading the app again only walks back into it.
+MAX_REFETCHES = 3
 
 # GET an API URL from the page, the way the app does. Returns [status, JSON body or null].
 FETCH_JS = r"""
@@ -167,28 +172,41 @@ class APClassroom(Source):
         return profiles[-1]
 
     async def _get(self, page: Page, path: str) -> dict[str, Any]:
-        """GET `path` from the AP Classroom API with the app's Authorization header. When the
-        token has expired, or the request fails (the app navigating away to the sign-in
-        destroys the page it ran in), loads the app again once for a fresh token."""
-        for retry in (False, True):
+        """GET `path` from the AP Classroom API with the app's Authorization header. A request
+        the browser cancelled while the page stayed on the app is sent again (up to
+        MAX_REFETCHES times). When the token has expired, or the request fails otherwise (the
+        app navigating away to the sign-in destroys the page it ran in), loads the app again
+        once for a fresh token."""
+        reloaded = False
+        refetches = 0
+        while True:
             try:
                 status, body = await page.evaluate(
                     FETCH_JS, [self._profile.api + path, self._profile.headers, config.timeout(30_000)])
             except PlaywrightError as e:
-                if retry or page.is_closed():
+                if page.is_closed():
                     raise
-                why = f"the request failed ({str(e).splitlines()[0]})"
+                first = str(e).splitlines()[0]
+                if ("Failed to fetch" in first and refetches < MAX_REFETCHES
+                        and page.url.startswith(BASE)):
+                    refetches += 1
+                    self.log.info("Fetching %s again, the browser cancelled it: %s", path, first)
+                    continue
+                if reloaded:
+                    raise
+                why = f"the request failed ({first})"
             else:
                 if status == 200:
                     return body
                 if status >= 500:
                     raise SiteUnavailable(f"AP Classroom's API answered HTTP {status} for {path}")
-                if status != 401 or retry:
+                if status != 401 or reloaded:
                     raise RuntimeError(f"AP Classroom's API answered HTTP {status} for {path}")
                 why = "its token expired"
             self.log.info("Loading AP Classroom again for a fresh token: %s", why)
             self._profile = await self._load_app(page)
-        raise AssertionError("unreachable")
+            reloaded = True
+            refetches = 0
 
     def _course(self, subj: dict, section: dict | None) -> Course:
         sid = str(subj["id"])

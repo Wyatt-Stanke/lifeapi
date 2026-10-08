@@ -51,6 +51,8 @@ tokenInput.addEventListener("change", () => {
   route();
 });
 
+const authHeaders = () => tokenInput.value ? { Authorization: `Bearer ${tokenInput.value}` } : {};
+
 // `json` is sent as the request body.
 async function api(path, params = {}, { method = "GET", json } = {}) {
   const qs = new URLSearchParams();
@@ -59,7 +61,7 @@ async function api(path, params = {}, { method = "GET", json } = {}) {
     for (const x of [].concat(v)) qs.append(k, x);
   }
   const url = API + path + (qs.toString() ? "?" + qs : "");
-  const headers = tokenInput.value ? { Authorization: `Bearer ${tokenInput.value}` } : {};
+  const headers = authHeaders();
   if (json !== undefined) headers["Content-Type"] = "application/json";
   const res = await fetch(url, { method, headers, body: json === undefined ? undefined : JSON.stringify(json) });
   const body = await res.json().catch(() => null);
@@ -397,14 +399,52 @@ const copyButton = (text, title = "Copy") => h("button", {
   onclick: async (e) => { await navigator.clipboard.writeText(await text()); e.target.textContent = "Copied"; },
 }, title);
 
-// A failed run's log: its error, the trail of everything it did, and the traceback.
-// Fetched when opened, since it can run to thousands of lines.
+// Opens a debug snapshot's file (GET /debug/{file}) in a new tab. Fetched here, so the token
+// goes in a header rather than the URL. The tab opens first: one opened after an await is
+// a popup the browser may block.
+async function openDebugFile(file) {
+  const tab = window.open("", "_blank");
+  try {
+    const res = await fetch(`${API}/debug/${encodeURIComponent(file)}`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status}: ${(await res.json().catch(() => null))?.detail ?? res.statusText}`);
+    tab.location = URL.createObjectURL(await res.blob());
+  } catch (e) {
+    tab?.close();
+    alert(`Couldn't open ${file}: ${e.message}`);
+  }
+}
+
+// A debug snapshot's files as buttons. `after` is a run's finished_at: a snapshot saved
+// later has replaced the one that run took.
+const snapshotLinks = (snap, after) => h("li", {}, `${snap.name}, saved `, when(snap.saved_at),
+  after && snap.saved_at > after ? h("small", {}, " (by a later run)") : null, " ",
+  snap.files.flatMap((f) => [h("button", { onclick: () => openDebugFile(f) }, f.endsWith(".png") ? "Screenshot" : "HTML"), " "]));
+
+// A failed run's log: its error, the trail of everything it did, and the traceback, plus
+// the debug snapshots it saved. Fetched when opened, since it can run to thousands of lines.
 const runLog = (runId) => {
-  const pre = h("pre");
+  const pre = h("pre"), snaps = h("div");
   const fetchLog = async () => (await api(`/runs/${runId}`)).log;
+  const show = (run) => {
+    pre.textContent = run.log;
+    if (run.snapshots.length) snaps.replaceChildren(h("p", {}, "Debug snapshots:"), h("ul", {}, run.snapshots.map((x) => snapshotLinks(x, run.finished_at))));
+  };
   const box = h("details", {
-    ontoggle: () => box.open && !pre.textContent && fetchLog().then((log) => { pre.textContent = log; }, (e) => { pre.textContent = e.message; }),
-  }, h("summary", {}, "log"), h("p", {}, copyButton(fetchLog, "Copy log")), pre);
+    ontoggle: () => box.open && !pre.textContent && api(`/runs/${runId}`).then(show, (e) => { pre.textContent = e.message; }),
+  }, h("summary", {}, "log"), snaps, h("p", {}, copyButton(fetchLog, "Copy log")), pre);
+  return box;
+};
+
+// Every saved debug snapshot, newest first. Listed when opened.
+const debugSnapshots = () => {
+  const list = h("div");
+  const box = h("details", {
+    ontoggle: () => box.open && !list.textContent && api("/debug").then(
+      (snaps) => list.replaceChildren(snaps.length ? h("ul", {}, snaps.map((x) => snapshotLinks(x))) : h("p", {}, h("em", {}, "None saved."))),
+      (e) => { list.textContent = e.message; }),
+  }, h("summary", {}, "Debug snapshots"),
+  h("p", {}, h("small", {}, "A screenshot and the page's HTML, saved when a run fails on a page it didn't expect. Each is replaced by the next one with the same name.")),
+  list);
   return box;
 };
 
@@ -556,7 +596,7 @@ async function viewStatus() {
   await render(); // errors on the first load go to route()'s "Couldn't load"
   return [h("h1", {}, "Sync status"),
     h("p", {}, h("small", {}, "Each source is fetched on its schedule. A partial fetch reads only part of a source (like Infinite Campus's GPA); a sync is always a full fetch. A headed browser is a visible one, which gets past some sites' bot checks.")),
-    box];
+    box, debugSnapshots()];
 }
 
 // ---------- link resolver: <this site>/<any source URL> → the matching page ----------

@@ -66,7 +66,13 @@ async def browser_context(
         try:
             yield ctx
         finally:
-            await ctx.close()
+            # A source stopped for running too long (runner._scrape) can leave a hung tab
+            # that blocks a clean close. Leaving async_playwright() then stops the driver,
+            # which kills Chrome.
+            try:
+                await asyncio.wait_for(ctx.close(), config.timeout(20_000) / 1000)
+            except asyncio.TimeoutError:
+                log.warning("Chrome didn't close cleanly; stopping it")
 
 
 def _no_display() -> bool:
