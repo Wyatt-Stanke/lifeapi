@@ -19,7 +19,7 @@ import shlex
 import sqlite3
 import tempfile
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Any, Iterator, Literal
+from typing import Any, Callable, Iterator, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -601,13 +601,23 @@ def item(source: str = ITEM_SOURCE, item_id: str = ITEM_ID,
 
 
 # Notes, deadlines and statuses write, so like /sync they open their own read-write connection. They're
-# kept apart from the scraped record (in item_marks), so a scrape never overwrites them.
+# kept apart from the scraped record (in item_marks), so a scrape never overwrites them. Each change
+# is logged in `actions` like a command, so it can be undone.
 
-def _mark(source: str, item_id: str, **fields: str | None) -> dict[str, Any]:
+def _edit(source: str, item_id: str, command: str,
+          plan_for: Callable[[dict[str, Any]], commands.Plan]) -> dict[str, Any]:
     with storage.connect() as conn:
-        _item_row(conn, source, item_id)
-        storage.set_mark(conn, source, item_id, **fields)
-        conn.commit()
+        item = storage.item_to_dict(_item_row(conn, source, item_id))
+        try:
+            plan = plan_for(item)
+        except commands.CommandError as e:
+            raise HTTPException(e.status, e.message)
+        if plan.changes:
+            before = storage.item_fields(conn, source, item_id, plan.changes)
+            storage.apply_fields(conn, source, item_id, plan.changes)
+            storage.record_action(conn, source, item_id, item["title"], command, plan.summary,
+                                  plan.notes, before, plan.changes)
+            conn.commit()
         return storage.item_to_dict(storage.get_item(conn, source, item_id))
 
 
@@ -625,27 +635,33 @@ def _due_utc(value: datetime | date) -> str:
          responses=errors(401, 404))
 def set_note(settings: NoteSettings, source: str = ITEM_SOURCE, item_id: str = ITEM_ID) -> Item:
     """Replaces the item's note (`user.note`) with `note`; a blank one deletes it. Notes stay
-    in lifeapi: the platform never sees them, and scrapes leave them alone. Returns the item."""
-    return _mark(source, item_id, note=settings.note.strip() or None)
+    in lifeapi: the platform never sees them, and scrapes leave them alone. Undoable, like a
+    command (`GET /extra/commands`). Returns the item."""
+    return _edit(source, item_id, "set the note",
+                 lambda item: commands.note_plan(item, settings.note.strip() or None))
 
 
 @app.delete("/items/{source}/{item_id}/note", dependencies=[Auth], tags=["items"],
             operation_id="deleteItemNote", summary="Delete the student's note on an item",
             responses=errors(401, 404))
 def delete_note(source: str = ITEM_SOURCE, item_id: str = ITEM_ID) -> Item:
-    """Returns the item."""
-    return _mark(source, item_id, note=None)
+    """Undoable, like a command (`GET /extra/commands`). Returns the item."""
+    return _edit(source, item_id, "delete the note", lambda item: commands.note_plan(item, None))
 
 
 @app.put("/items/{source}/{item_id}/due", dependencies=[Auth], tags=["items"],
-         operation_id="setItemDue", summary="Change an item's deadline",
+         operation_id="setItemDue", summary="Change or keep an item's deadline",
          responses=errors(401, 404))
 def set_due(settings: DueSettings, source: str = ITEM_SOURCE, item_id: str = ITEM_ID) -> Item:
     """Sets the student's own deadline for the item (an extension, say, or an earlier personal
     one). From then on it's the item's `due_at` everywhere, in lists, filters and counts, and
     `source_due_at` keeps the platform's. If the platform's deadline changes later, `due_at`
-    stays the student's until `DELETE` restores the platform's. Returns the item."""
-    return _mark(source, item_id, due_at=_due_utc(settings.due_at))
+    stays the student's until `DELETE` restores the platform's. Setting the platform's own
+    deadline keeps it: it's stored as the student's, so it stays if the platform's moves.
+    Undoable, like a command (`GET /extra/commands`). Returns the item."""
+    now = datetime.now(LOCAL_TZ)
+    return _edit(source, item_id, "set the due date",
+                 lambda item: commands.due_plan(item, _due_utc(settings.due_at), now))
 
 
 @app.delete("/items/{source}/{item_id}/due", dependencies=[Auth], tags=["items"],
@@ -654,8 +670,10 @@ def set_due(settings: DueSettings, source: str = ITEM_SOURCE, item_id: str = ITE
 def reset_due(source: str = ITEM_SOURCE, item_id: str = ITEM_ID) -> Item:
     """Drops the student's deadline, so `due_at` is the platform's again (`source_due_at`).
     An assignment made in lifeapi has no platform deadline, so it's then left without one.
-    Returns the item."""
-    return _mark(source, item_id, due_at=None)
+    Undoable, like a command (`GET /extra/commands`). Returns the item."""
+    now = datetime.now(LOCAL_TZ)
+    return _edit(source, item_id, "reset the due date",
+                 lambda item: commands.reset_due_plan(item, now))
 
 
 @app.put("/items/{source}/{item_id}/status", dependencies=[Auth], tags=["items"],
@@ -667,18 +685,12 @@ def set_status(settings: StatusSettings, source: str = ITEM_SOURCE, item_id: str
     while the platform's (`source_status`) says otherwise, so it leaves or joins
     `/items/upcoming` and `/items/missing`; once the platform agrees, its own wording (`graded`,
     say) shows again. Marking it the way the platform already has it drops the student's
-    status. An assignment made in lifeapi becomes `done` or `assigned`. 409 for an
-    announcement or material. Returns the item. The command `done` (`POST /extra/commands`)
-    does the same, undoably."""
-    with storage.connect() as conn:
-        try:
-            plan = commands.status_plan(storage.item_to_dict(_item_row(conn, source, item_id)),
-                                        settings.turned_in)
-        except commands.CommandError as e:
-            raise HTTPException(e.status, e.message)
-        storage.apply_fields(conn, source, item_id, plan.changes)
-        conn.commit()
-        return storage.item_to_dict(storage.get_item(conn, source, item_id))
+    status, unless `keep`: then it's stored anyway, so it holds if the platform's changes. An
+    assignment made in lifeapi becomes `done` or `assigned`. 409 for an announcement or
+    material. The command `done` (`POST /extra/commands`) does the same. Undoable, like a
+    command. Returns the item."""
+    return _edit(source, item_id, "set the status",
+                 lambda item: commands.status_plan(item, settings.turned_in, settings.keep))
 
 
 @app.delete("/items/{source}/{item_id}/status", dependencies=[Auth], tags=["items"],
@@ -686,13 +698,9 @@ def set_status(settings: StatusSettings, source: str = ITEM_SOURCE, item_id: str
             responses=errors(401, 404, 409))
 def reset_status(source: str = ITEM_SOURCE, item_id: str = ITEM_ID) -> Item:
     """Drops the student's status, so `status` is the platform's again (`source_status`). 409
-    for an assignment made in lifeapi, whose status is only ever the student's. Returns the
-    item."""
-    with storage.connect() as conn:
-        if _item_row(conn, source, item_id)["converted_from"] is not None:
-            raise HTTPException(409, "It was made in lifeapi, so it has no platform status to go "
-                                     "back to; mark it turned in or not instead.")
-    return _mark(source, item_id, status=None)
+    for an assignment made in lifeapi, whose status is only ever the student's. Undoable, like
+    a command (`GET /extra/commands`). Returns the item."""
+    return _edit(source, item_id, "reset the status", commands.reset_status_plan)
 
 
 @app.get("/grades", dependencies=[Auth], tags=["grades"], operation_id="listGrades",

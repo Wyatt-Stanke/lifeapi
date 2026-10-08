@@ -237,7 +237,9 @@ The API writes these, in tables the scraper never reads or writes, so a scrape (
   recreates the view whenever `ITEM_VIEW`'s text changes, so edit it there. The scraper's
   `_previous_items` reads `items` directly, so its cache never sees marks.
 
-- `actions`: every command that changed something (`POST /extra/commands`), with `before`
+- `actions`: every command that changed something (`POST /extra/commands`), and every change made
+  through `PUT`/`DELETE /items/{source}/{item_id}/note`, `/due` and `/status` (`app._edit`, with
+  `command` like `set the due date`; the plans are `commands.due_plan`, `note_plan` and so on), with `before`
   and `after` JSON of the fields it touched (`due_at` and `status` as item_marks stores them,
   so null means the source's; `note`; a custom item's `status`). Undoing applies `before` and is logged as an action with
   `undo_of`; `storage.record_action` keeps `undone_by` meaning "not in effect" down a
@@ -282,7 +284,8 @@ effect (undo) or latest undo in effect (redo). Matching order matters: undo/redo
 commands (before dates, so a note's text is never read as one), done/not done
 (`status_plan`, shared with `PUT /items/{source}/{item_id}/status`: a scraped item gets a
 `turned_in`/`assigned` mark only while its source disagrees, and the mark is cleared when
-marked the source's way; 409 for announcements and materials), reset/remove the due date, shifts by an amount ("push it back a
+marked the source's way, unless `keep` (the explorer always sends it), which stores it anyway so
+it holds if the source changes; 409 for announcements and materials), reset/remove the due date, shifts by an amount ("push it back a
 day"; "in 3 days" is a date, not a shift), then a date/time. What isn't said is kept from the
 item: a time alone keeps its date, a date alone its time. A time without am/pm (`_pick_half`):
 1-6 and :59 are PM, 12 is noon, 7-11 whichever is nearer the item's current due time. A
@@ -395,9 +398,12 @@ restores the default. The explorer edits it in the Sync status page's Browser co
 A temporary, deliberately unstyled explorer: plain semantic HTML, no CSS, no build step.
 It's a user-facing wrapper (Today, Upcoming, Missing, Announcements, Courses, Grades,
 Search, Sync status with sync buttons and schedule and browser editors; item pages with a
-note box, deadline editor and a "Mark turned in" button, which runs the `done`/`not done`
-command so it's undoable; "Convert to assignment" on announcements, a form filled from
-`/extra/drafts`), not an endpoint browser. Raw
+✎ button beside each editable field (due date, status, note, and a custom item's title, kind,
+points and description) that opens a small form under it (`editable()`, `editors()`); "Convert
+to assignment" on announcements, a form filled from `/extra/drafts`), not an endpoint browser.
+Saving a due date or status stores it as the student's even when it's the source's own value
+(the button says "Keep" then), so it stays if the source changes; "Use <source>'s" resets it.
+After a save the page shows the logged change with Undo (`?did=`). Raw
 API access stays at `/api/docs`.
 
 - `serve.py` is stdlib only. It proxies `/api/*` (GET, POST, PUT, PATCH, DELETE; each method needs its
@@ -431,8 +437,8 @@ API access stays at `/api/docs`.
   `viewOpen` resolves the link and goes to `#/item/…?do=…`; `route()` runs `?do=` through
   `runPending` (POST /extra/commands) and replaces it in the address with `?did=<action>`
   (or `?msg=`, `?cmd_error=`), so a reload or Back never runs it twice. `commandBanner` shows
-  `did`'s summary and notes with Undo/Redo above any view. Item pages have a command box
-  (it sets `?do=`) and the item's last commands, each with Undo.
+  `did`'s summary and notes with Undo/Redo above any view. Item pages end with a command box
+  (it sets `?do=`) and the item's last commands and edits, each with Undo.
 - **Link resolver**: `<site>/<any source URL>` (e.g.
   `localhost:8080/https://classroom.google.com/u/1/c/…/a/…/details`) is rewritten to
   `#/open?url=…`, which redirects to the matching page. Google Classroom URL segments are

@@ -321,6 +321,11 @@ class DueSettings(BaseModel):
 
 class StatusSettings(BaseModel):
     turned_in: bool = Field(description="True: turned in (finished). False: not yet.")
+    keep: bool = Field(False, description="Store it as the student's even when the platform "
+                                          "already has it so, so it holds if the platform's "
+                                          "status changes. A kept `turned_in` still shows the "
+                                          "platform's wording (`graded`) while that's finished "
+                                          "too.")
 
 
 WorkKind = Literal["assignment", "quiz"]
@@ -474,7 +479,10 @@ class Action(BaseModel):
     source: str
     item_id: str
     title: str | None = Field(description="The item's title when the command ran.")
-    command: str = Field(description="The command as given (`undo` for an undo).")
+    command: str = Field(description="The command as given (`undo` for an undo). Changes made "
+                                     "with `PUT`/`DELETE /items/{source}/{item_id}/due`, `/status` "
+                                     "or `/note` are logged too, as `set the due date`, `reset the "
+                                     "status`, `delete the note` and so on.")
     summary: str = Field(description="What it did, in a sentence to show the person, e.g. `Due date "
                                      "set to today, Thu Oct 8 at 11:59 PM (was tomorrow, Fri Oct 9 "
                                      "at 11:59 PM).`")
@@ -561,6 +569,7 @@ announcements); those additions stay in lifeapi and never reach a platform.
 | Remember something about an assignment | `PUT /items/{{source}}/{{item_id}}/note` |
 | I got an extension | `PUT /items/{{source}}/{{item_id}}/due` (`DELETE` undoes it) |
 | I turned it in (or haven't, whatever the platform says) | `PUT /items/{{source}}/{{item_id}}/status` with `{{"turned_in": true}}` (`DELETE` undoes it) |
+| Keep a deadline or status even if the platform changes it | `PUT /items/{{source}}/{{item_id}}/due` with the deadline it has; `/status` with `"keep": true` |
 | An announcement says something is due | `GET /extra/drafts/{{source}}/{{item_id}}`, then `POST /extra/assignments` |
 | Mark one of those done | `PATCH /extra/assignments/{{source}}/{{item_id}}` with `{{"status": "done"}}` |
 | Do something said in words ("due friday 5pm", "push it back a day", "undo") | `POST /extra/commands` |
@@ -631,7 +640,9 @@ and a command in words: due dates (`set the due date to today at 11:59 PM`, `due
 and `not done` (`turned in`, `assigned`…), `undo`. What isn't said is kept (`due at 5pm` keeps the date), a time without am/pm is read
 the way a student would mean it, and the answer says what was done and how anything
 ambiguous was read; show `summary` and `notes` to the person. Every command can be undone,
-however old (`POST /extra/commands/{{action_id}}/undo`, or the command `undo`).
+however old (`POST /extra/commands/{{action_id}}/undo`, or the command `undo`). Changes made
+with `PUT`/`DELETE /items/{{source}}/{{item_id}}/note`, `/due` and `/status` are logged and
+undoable the same way.
 
 **Deletions.** A record that disappears from its platform is kept with `active: false` and
 hidden from every list unless you pass `include_inactive=true`. If a source's scrape fails,
