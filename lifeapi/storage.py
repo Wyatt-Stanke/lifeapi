@@ -1,5 +1,6 @@
 """SQLite storage. The scraper writes; the API only reads, apart from sync requests, fetch
-schedules and browser settings.
+schedules, browser settings and the student's own additions (notes, changed due dates and
+assignments made from announcements), which live in tables the scraper never writes.
 
 Each record is stored as its full JSON document plus a few indexed columns used for
 filtering. When a source finishes a successful full scrape, anything from that source that
@@ -20,6 +21,7 @@ from typing import Any, Collection, Iterator
 
 from . import config
 from .models import Course, Grade, Item, ScrapeResult
+from .scraper.dates import LOCAL_TZ
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS courses (
@@ -121,7 +123,56 @@ CREATE TABLE IF NOT EXISTS browser_settings (
     headed INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
+-- What the student adds to an item through the API, keyed like the item (scraped or made
+-- in lifeapi). `due_at` (UTC) replaces the source's deadline wherever the API reports or
+-- filters on one; the source's own stays in `items`. A row with neither is deleted.
+CREATE TABLE IF NOT EXISTS item_marks (
+    source TEXT NOT NULL,
+    id TEXT NOT NULL,
+    note TEXT,
+    due_at TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (source, id)
+);
+-- Assignments the student made from an announcement (`POST /extra/assignments`), served as
+-- items with id CUSTOM_PREFIX || custom_id, in the announcement's source and course
+-- (`from_id`). `data` is the Item JSON. Their deadline is in item_marks.
+CREATE TABLE IF NOT EXISTS custom_items (
+    custom_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    from_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    course_id TEXT,
+    course_name TEXT,
+    title TEXT,
+    status TEXT,
+    posted_at TEXT,
+    data TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
+
+CUSTOM_PREFIX = "lifeapi-"
+
+# Items as the API serves them: scraped items and custom ones, with item_marks applied.
+# `due_at` is the effective deadline (the student's if set) and `source_due_at` the
+# source's. Recreated by `_migrate` whenever this text changes.
+ITEM_VIEW = f"""CREATE VIEW item_view AS
+SELECT b.source, b.id, b.kind, b.course_id, b.course_name, b.title, b.status,
+       COALESCE(m.due_at, b.source_due_at) AS due_at, b.source_due_at, b.posted_at, b.data,
+       b.active, b.first_seen_at, b.last_seen_at, b.converted_from,
+       m.note, m.due_at AS user_due_at, m.updated_at AS user_updated_at
+FROM (
+    SELECT source, id, kind, course_id, course_name, title, status, due_at AS source_due_at,
+           posted_at, data, active, first_seen_at, last_seen_at, NULL AS converted_from
+    FROM items
+    UNION ALL
+    SELECT source, '{CUSTOM_PREFIX}' || custom_id, kind, course_id, course_name, title, status,
+           NULL, posted_at, data, 1, created_at, updated_at, from_id
+    FROM custom_items
+) b
+LEFT JOIN item_marks m ON m.source = b.source AND m.id = b.id"""
 
 
 def now_iso() -> str:
@@ -166,6 +217,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for name in ("log", "partial", "failure"):
         if name not in columns:
             conn.execute(f"ALTER TABLE scrape_runs ADD COLUMN {name} TEXT")
+    view = conn.execute("SELECT sql FROM sqlite_master WHERE type='view' AND name='item_view'").fetchone()
+    if view is None or view[0] != ITEM_VIEW:
+        conn.execute("DROP VIEW IF EXISTS item_view")
+        conn.execute(ITEM_VIEW)
 
 
 # Failed runs keep their trail (`log`) for this many of each source's latest runs.
@@ -541,11 +596,81 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return data
 
 
+def _local(utc: str | None) -> str | None:
+    """A stored UTC timestamp in the school's time zone, like the scraped dates in `data`."""
+    return datetime.fromisoformat(utc).astimezone(LOCAL_TZ).isoformat() if utc else None
+
+
+def item_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    """An `item_view` row as the API's Item: the stored record with the student's marks."""
+    data = row_to_dict(row)
+    data["source_due_at"] = data.get("due_at")
+    if row["user_due_at"]:
+        data["due_at"] = _local(row["user_due_at"])
+    data["converted_from"] = row["converted_from"]
+    data["user"] = None if row["user_updated_at"] is None else {
+        "note": row["note"], "due_at": _local(row["user_due_at"]),
+        "updated_at": row["user_updated_at"],
+    }
+    return data
+
+
+def get_item(conn: sqlite3.Connection, source: str, id_: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM item_view WHERE source=? AND id=?", (source, id_)).fetchone()
+
+
+def set_mark(conn: sqlite3.Connection, source: str, id_: str, **fields: str | None) -> None:
+    """Set `note` and/or `due_at` (UTC ISO) on an item; None clears one. Doesn't commit."""
+    conn.execute("INSERT INTO item_marks (source, id, updated_at) VALUES (?, ?, ?) "
+                 "ON CONFLICT (source, id) DO NOTHING", (source, id_, now_iso()))
+    for name, value in fields.items():
+        assert name in ("note", "due_at"), name
+        conn.execute(f"UPDATE item_marks SET {name}=?, updated_at=? WHERE source=? AND id=?",
+                     (value, now_iso(), source, id_))
+    conn.execute("DELETE FROM item_marks WHERE source=? AND id=? AND note IS NULL AND due_at IS NULL",
+                 (source, id_))
+
+
+def custom_id(item_id: str) -> int | None:
+    """The custom_items row behind an item id, or None if it isn't one made in lifeapi."""
+    num = item_id.removeprefix(CUSTOM_PREFIX)
+    return int(num) if item_id.startswith(CUSTOM_PREFIX) and num.isdigit() else None
+
+
+def create_custom_item(conn: sqlite3.Connection, item: Item, from_id: str) -> str:
+    """Store an assignment made from announcement `from_id`. `item.id` is replaced by the
+    new one, which is returned. Doesn't commit."""
+    ts = now_iso()
+    cur = conn.execute(
+        "INSERT INTO custom_items (source, from_id, kind, data, created_at, updated_at) "
+        "VALUES (?, ?, ?, '{}', ?, ?)", (item.source, from_id, item.kind.value, ts, ts))
+    item.id = f"{CUSTOM_PREFIX}{cur.lastrowid}"
+    save_custom_item(conn, item, touch=False)
+    return item.id
+
+
+def save_custom_item(conn: sqlite3.Connection, item: Item, touch: bool = True) -> None:
+    """Write an edited custom item back. Doesn't commit."""
+    conn.execute(
+        "UPDATE custom_items SET kind=?, course_id=?, course_name=?, title=?, status=?, posted_at=?, "
+        "data=?, updated_at=CASE WHEN ? THEN ? ELSE updated_at END WHERE custom_id=?",
+        (item.kind.value, item.course_id, item.course_name, item.title, item.status,
+         _iso(item.posted_at), item.model_dump_json(), touch, now_iso(), custom_id(item.id)),
+    )
+
+
+def delete_custom_item(conn: sqlite3.Connection, source: str, item_id: str) -> None:
+    """Delete a custom item and its marks. Doesn't commit."""
+    conn.execute("DELETE FROM custom_items WHERE custom_id=?", (custom_id(item_id),))
+    conn.execute("DELETE FROM item_marks WHERE source=? AND id=?", (source, item_id))
+
+
 __all__ = [
     "Course", "Grade", "Item", "ScrapeResult", "connect", "init_db", "start_run",
     "finish_run", "save_result", "row_to_dict", "now_iso", "request_sync",
     "pending_sync_requests", "start_sync_requests", "finish_sync_request",
     "abandon_sync_requests", "sync_request_to_dict", "clear_sync_requests", "run_to_dict",
     "get_schedule", "set_schedule", "reset_schedule", "next_fetch", "get_browser",
-    "set_browser", "reset_browser",
+    "set_browser", "reset_browser", "item_to_dict", "get_item", "set_mark", "custom_id",
+    "create_custom_item", "save_custom_item", "delete_custom_item",
 ]

@@ -11,7 +11,8 @@ separate schedules. They share only `lifeapi/models.py` (pydantic models) and
 scraper with `--due` every minute, and it fetches the sources that are due on their
 schedules (see "Schedules" below). The API stays up. Its only writes are queueing manual
 sync requests (`POST /sync`) and setting schedules and browser settings, all of which the
-scraper picks up.
+scraper picks up, and the student's own additions (notes, changed deadlines, assignments
+made from announcements; see "The student's additions"), which the scraper never touches.
 
 ## Commands
 
@@ -167,7 +168,8 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
 ### Storage and API
 
 - `storage.py`: tables `courses`, `items`, `grades` and `scrape_runs`, plus `sync_requests`,
-  `schedules`, `browser_settings` and `history`. Each record row stores the full model JSON in `data`, plus a few indexed
+  `schedules`, `browser_settings`, `history`, and the API-written `item_marks` and
+  `custom_items` (see "The student's additions"). Each record row stores the full model JSON in `data`, plus a few indexed
   columns used by API filters. `save_result` upserts and then, for a full run, marks rows
   not seen in that run `active=0` (soft delete). `datetime`s are stored as UTC ISO strings
   in the indexed columns. New columns go in both `SCHEMA` and `_migrate`.
@@ -187,8 +189,9 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   `-wal`/`-shm` files after the scraper exits. They also use `check_same_thread=False`,
   because FastAPI opens the per-request connection (the `db()` dependency) and uses it on
   different threadpool threads.
-- `api/app.py`: FastAPI, read-only apart from `/sync`, `/sources/{source}/schedule` and
-  `/sources/{source}/browser`. The
+- `api/app.py`: FastAPI, read-only apart from `/sync`, `/sources/{source}/schedule`,
+  `/sources/{source}/browser`, `/items/{source}/{item_id}/note` and `/due`, and
+  `/extra/assignments`. The
   optional `LIFEAPI_API_TOKEN` auth (bearer header or `?token=` query param) applies to
   everything except `/health` and the single-value endpoints `/min/<name>` (plain-text number)
   and `/json/<name>` (`{"value": …}`), for `gpa`, `missing`, `next` and `status`.
@@ -206,6 +209,45 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   stored row that no longer fits its model becomes a 500. When you add a source, status,
   `extra` key or endpoint, update those docs. `DONE_STATUSES` there is the finished-status
   list that `/items/upcoming` uses.
+
+### The student's additions
+
+The API writes these, in tables the scraper never reads or writes, so a scrape (including
+`save_result`'s soft delete) can't overwrite them:
+
+- `item_marks` (`source`, `id`, `note`, `due_at` UTC): a note and/or the student's own
+  deadline on any item, scraped or custom. `storage.set_mark` deletes a row once both are
+  null.
+- `custom_items`: assignments made from an announcement (`POST /extra/assignments`), in the
+  announcement's source and course (`from_id`), served with id `lifeapi-<custom_id>`
+  (`storage.CUSTOM_PREFIX`). `data` is the Item JSON with `due_at` null: their deadline is an
+  `item_marks` row like any changed deadline, so one code path handles both. `status` is
+  `assigned` or `done`. Deleting one deletes its marks.
+- `item_view` (a SQL view) is what the API serves items from: `items` UNION ALL
+  `custom_items`, LEFT JOIN `item_marks`. Its `due_at` is the effective deadline
+  (`COALESCE(mark, source's)`), so every filter, sort and count (`_due_sql`, `_missing_sql`,
+  `/items`) uses the student's deadline without special cases, and `source_due_at` is the
+  source's. API item queries must use `item_view`, never `items`, and `storage.item_to_dict`
+  to build the response (it adds `source_due_at`, `converted_from` and `user`). `_migrate`
+  recreates the view whenever `ITEM_VIEW`'s text changes, so edit it there. The scraper's
+  `_previous_items` reads `items` directly, so its cache never sees marks.
+
+`api/drafts.py` makes `GET /extra/drafts/{source}/{item_id}`: suggestions for the
+"convert to assignment" form, from the announcement's text and the rest of its course. It's
+deliberately rule-based (no model, no dependency, ~2 ms a post), so it's deterministic and
+each suggestion carries its evidence (the date's text and offsets, where its time came from,
+the sentence). The pipeline: `find_dates` (regex temporal tagger; resolves against the post's
+`posted_at`, not now; merges a date with an adjacent time, and a lone time with its line's
+date) -> `clauses` (sentences, split between dated clauses) -> `_deadline_score` and
+`_task_score` (cue words around each date and in each sentence) -> `_title` (cuts the
+deadline and its cue words, keeps the subject or the imperative, trims reminder phrasing).
+Course data fills the gaps: `usual_time` (the modal due time of the course's scraped
+deadlines, per kind when there are enough), `_templates` (numbered names used twice or more,
+for casing and an alternative title), and `related` (IDF-weighted share of each item's title
+found in the post; needs two shared words or a whole numbered title, and penalises a
+different number, so "Lab 4" doesn't match a post about lab 5). To change its behaviour, run
+it on sample posts (`draft({"description": …, "posted_at": …}, course_items)`) and compare
+the drafts before and after; it has many interacting heuristics.
 
 ### Finishing a sign-in by hand
 
@@ -310,10 +352,12 @@ restores the default. The explorer edits it in the Sync status page's Browser co
 
 A temporary, deliberately unstyled explorer: plain semantic HTML, no CSS, no build step.
 It's a user-facing wrapper (Today, Upcoming, Missing, Announcements, Courses, Grades,
-Search, Sync status with sync buttons and schedule and browser editors), not an endpoint browser. Raw
+Search, Sync status with sync buttons and schedule and browser editors; item pages with a
+note box and deadline editor; "Convert to assignment" on announcements, a form filled from
+`/extra/drafts`), not an endpoint browser. Raw
 API access stays at `/api/docs`.
 
-- `serve.py` is stdlib only. It proxies `/api/*` (GET, POST, PUT, DELETE; each method needs its
+- `serve.py` is stdlib only. It proxies `/api/*` (GET, POST, PUT, PATCH, DELETE; each method needs its
   own `do_<METHOD>`, or `BaseHTTPRequestHandler` answers 501) to the API, so the API needs no CORS.
   It sends `X-Forwarded-Prefix: /api`, which the API's `forwarded_prefix` middleware turns
   into the request's `root_path`. That way `/api/docs` loads `/api/openapi.json`, and the
@@ -354,6 +398,8 @@ API access stays at `/api/docs`.
 
 - `Item` is the shared shape for assignments, quizzes, questions, materials and
   announcements. `url` (the deep link back to the source) is the most important field.
+  Scrapers set `due_at` to the source's deadline; the API's `Item` (`api/schemas.py`)
+  reports the effective one as `due_at` and the source's as `source_due_at`.
 - Anything source-specific goes in `extra`. For Classroom, `extra.submitted_work` is the
   student's own attachments, `extra.links` are links from the description,
   `extra.list_signature`, `extra.detail_fetched_at` and (announcements) `extra.read_at`

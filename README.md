@@ -11,7 +11,10 @@ The project has two halves that run separately:
   platform and writes to `data/lifeapi.db`. Run `--due` every minute and it fetches each
   source on its own schedule (every 2 hours unless set otherwise through the API).
 - **API** (`python -m lifeapi.api`): FastAPI, read-only over the same database except
-  for queueing manual syncs (`POST /sync`), which the scraper picks up. Leave it running.
+  for queueing manual syncs (`POST /sync`), which the scraper picks up, settings, and your
+  own additions: notes, changed deadlines and assignments made from announcements (see
+  [Your notes, deadlines and assignments](#your-notes-deadlines-and-assignments)). Leave it
+  running.
 
 | Source | Key | Login | What's collected |
 |---|---|---|---|
@@ -261,6 +264,12 @@ All list endpoints return only items still present at the source, unless you pas
 | `GET /items/missing` | Past due and not done. |
 | `GET /announcements?days=14` | Recent announcements. |
 | `GET /items/{source}/{id}` | One item. |
+| `PUT /items/{source}/{id}/note` | Your note on an item: JSON `{"note": "…"}` (blank deletes it). `DELETE` deletes it. |
+| `PUT /items/{source}/{id}/due` | Your own deadline for an item: JSON `{"due_at": "2026-10-12T23:59:00-04:00"}` (a bare date means 23:59). `DELETE` goes back to the platform's. |
+| `GET /extra/drafts/{source}/{id}` | Suggested assignments from an announcement: title, kind, deadline, points, every date in the text, and existing items it may be about. Saves nothing. |
+| `POST /extra/assignments` | Make an assignment from an announcement: JSON `{"source", "announcement_id", "title", "kind", "due_at", "description", "points_possible", "note"}`. |
+| `GET /extra/assignments` | Assignments made from announcements (also in `/items`). Filters: `source`, `announcement_id`. |
+| `PATCH /extra/assignments/{source}/{id}` | Edit one (`title`, `kind`, `description`, `points_possible`, `status`: `assigned` or `done`). `DELETE` deletes it. |
 | `GET /courses` | Classes per source. |
 | `GET /grades` | Infinite Campus grades. Filters: `source`, `term`. |
 | `GET /history` | Every change to grades, GPAs, category totals, assignment scores and item statuses/scores, newest first, kept for good. Filters: `source`, `kind` (`grade`, `entry`, `item`), `id` (a grade's id includes its assignments), `gpa=true`, `since`, `limit`. |
@@ -289,7 +298,8 @@ An item looks like this:
   "points_possible": 30.0, "score": null,
   "attachments": [], "comments": [],
   "extra": {"topic": "AP Classroom Weekly Projects", "category": "Projects"},
-  "active": true, "first_seen_at": "...", "last_seen_at": "..."
+  "active": true, "first_seen_at": "...", "last_seen_at": "...",
+  "source_due_at": "2026-10-09T08:00:00-04:00", "converted_from": null, "user": null
 }
 ```
 
@@ -302,6 +312,36 @@ For Google Classroom, `attachments` holds only what the teacher attached. Your o
 `partial_late`. Times are ISO 8601. Google Classroom only shows dates like "Sep 16", so
 when there's no time of day, the year is inferred and the time is set to 23:59 for due
 dates and 00:00 for posted dates.
+
+### Your notes, deadlines and assignments
+
+Everything here stays in lifeapi: nothing is sent to the platforms, and scrapes never
+change it (it's in its own tables, `item_marks` and `custom_items`).
+
+- **Notes.** Any item can have a note (`user.note`). The explorer has a Note box on every
+  item page, lists show "note", and Search (`q`) matches notes.
+- **Deadlines.** Changing an item's deadline (an extension, or an earlier one of your own)
+  makes it the item's `due_at` everywhere: lists, filters, sorting, Upcoming, Missing and
+  the `next`/`missing` counts. The platform's deadline is always kept in `source_due_at`,
+  even if the platform changes it later, and `user.due_at` is yours. Lists mark these
+  "your deadline".
+- **Announcements to assignments.** "Convert to assignment" on an announcement opens a form
+  filled in by `GET /extra/drafts/…`. The assignment you save joins the announcement's
+  course with an id like `lifeapi-3`, links back to the announcement (`converted_from`),
+  keeps its attachments and shows up in Upcoming and Missing like scraped work, until you
+  mark it done.
+
+The drafts come from `lifeapi/api/drafts.py`, a rule-based text analyser with no model,
+service or extra dependency (about 2 ms a post). It finds every date and time in the
+post (`this Friday at 8am`, `10/14`, `tomorrow`, `end of next week`, `in 3 days`) and
+resolves them from when it was posted, scores which reads like the deadline (`due`, `by`,
+`moved to`), picks the sentences that ask for work (and splits "lab 5 is due Friday and the
+quiz is Tuesday" into two), and trims each into a title ("Reminder: your Chapter 5 vocab
+quiz is this Friday!" becomes "Chapter 5 vocab quiz"). It then uses the rest of the course:
+a date with no time gets the time the course's work is usually due, recurring names are
+spelled the teacher's way ("lab 5" becomes "Lab 5" if there are "Lab 3" and "Lab 4"), and
+existing items the post mentions are offered instead of a duplicate, with a button to move
+their deadline (useful for "the essay is extended to Monday").
 
 ## Adding a platform
 
