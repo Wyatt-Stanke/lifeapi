@@ -445,12 +445,17 @@ API access stays at `/api/docs`.
   `PAGES` entry at `/` when the `Host` header (port ignored) is `HOST`. Compose uses it to put
   `/biggpa` at the root of `gpa.stan.ke`, a second domain on the same service.
 - `biggpa.html` (`/biggpa`) is the one styled page: `GET /api/json/gpa` in large Inter (Google
-  Fonts), black on white, sized to the window by `fit()`, re-fetched every 5 minutes (a failed
+  Fonts), black on white, sized to the window by `fit()`, re-fetched every 3 minutes (a failed
   refresh keeps the last value). It sends no token (`/json/gpa` needs none), so it works on any
   device. The unit label is a `<button>` styled as plain header text: clicking it switches
   between the percentage and the 4.0 scale (the percentage / 25, still to three places), and
   the choice is kept in `localStorage`. The line under the title is the age of
   `last_seen_at` ("Updated 2 h ago"), preceded by the error when a refresh fails.
+  The tab title (`GPA - 99.150`) and favicon follow the shown value, so a background tab
+  shows it: `renderIcon()` draws the digits before the point over the three after it on a
+  64px canvas (`fillText`'s `maxWidth` squeezes a row like `100`). Nothing may wait on
+  `requestAnimationFrame` (hidden tabs never run it); timers are throttled to about once a
+  minute there, and a frozen tab refreshes on `resume`.
 - `index.html` holds all the JS in one inline script. A tiny `h(tag, attrs, ...kids)`
   helper builds the DOM. Views are async functions that return nodes, and the hash router
   calls them as `view(...pathArgs, params)`. Routes are `#/item/<source>/<id>`,

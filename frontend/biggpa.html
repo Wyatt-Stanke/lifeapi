@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GPA</title>
+<link rel="icon" id="icon">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..900&display=swap">
@@ -70,6 +71,8 @@
 const out = document.getElementById("gpa");
 const unitButton = document.getElementById("unit");
 const updated = document.getElementById("updated");
+const icon = document.getElementById("icon");
+const iconCanvas = Object.assign(document.createElement("canvas"), { width: 64, height: 64 });
 
 // Sizes the number to fill the content width, capped so it fits the viewport's height.
 function fit() {
@@ -110,11 +113,34 @@ function renderUpdated() {
   updated.title = seenAt ? seenAt.toLocaleString() : "";
 }
 
+// Draws the GPA as the favicon: the digits before the point on the top half, the three after it
+// on the bottom, the point implied. A canvas, not an SVG icon, because an SVG favicon can't use
+// the page's web font. fillText's maxWidth squeezes a wide row (100) to fit.
+function renderIcon(text) {
+  const [whole, frac] = text.split(".");
+  const ctx = iconCanvas.getContext("2d");
+  const size = iconCanvas.width, half = size / 2;
+  ctx.fillStyle = "#fff"; // opaque, so it reads on dark tab strips too
+  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = "#000";
+  ctx.font = `800 38px Inter, "Helvetica Neue", Helvetica, Arial, sans-serif`;
+  ctx.textAlign = "center";
+  const cap = ctx.measureText("0").actualBoundingBoxAscent;
+  [whole, frac].forEach((digits, row) => {
+    ctx.fillText(digits, half, row * half + (half + cap) / 2, size - 2);
+  });
+  icon.href = iconCanvas.toDataURL("image/png");
+}
+
 function render() {
   // The 4.0 scale is the percentage mapped linearly (100% = 4.000), to the same three places.
   // Weighting can lift it past 4, as it lifts the percentage past 100.
-  if (gpa != null) out.textContent = places.format(fourScale ? gpa / 25 : gpa);
-  else if (error) out.textContent = "—";
+  if (gpa != null) {
+    const text = places.format(fourScale ? gpa / 25 : gpa);
+    out.textContent = text;
+    document.title = `GPA - ${text}`;
+    renderIcon(text);
+  } else if (error) out.textContent = "—";
   unitButton.textContent = fourScale ? "4.0 scale" : "Percent";
   renderUpdated();
   fit();
@@ -145,11 +171,17 @@ unitButton.addEventListener("click", () => {
 });
 
 addEventListener("resize", fit);
-document.fonts.ready.then(fit);
+document.fonts.ready.then(render); // redraws the favicon in Inter too
 render();
 load();
+// Keeps the title and favicon current in a background tab. Browsers throttle hidden tabs' timers
+// to about once a minute, which a 3-minute interval doesn't notice. Nothing here waits on
+// requestAnimationFrame, which hidden tabs never run. A frozen or discarded tab stops entirely,
+// so refresh as soon as it comes back, or the network does.
 setInterval(load, 3 * 60 * 1000);
 setInterval(renderUpdated, 60 * 1000);
+document.addEventListener("resume", load); // Chrome, after freezing the tab
+addEventListener("online", load);
 </script>
 </body>
 </html>
