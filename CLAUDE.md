@@ -454,12 +454,12 @@ API access stays at `/api/docs`.
   Post yellow, due white on blue, status white on black. The rule above the header (`#rule`,
   absolutely positioned in it, drawn with gradients in `--fg`) is each page's only ornament, and
   differs per page: GPA's solid; missing's with one column of twelve knocked out; next's a ruler
-  over the window, ticked per day of `?days=` (per week past 31) by JS setting `--tick`; due's
-  the second hand of the SBB station clock, a rod whose disc (`#hand`, a Web Animation) sweeps it
-  in 58.5 s and waits at the end until the countdown's minute turns over, then starts again
-  (resting at the start when nothing is due or under `prefers-reduced-motion`); status's a
-  signal trace with one pulse. They send no token (`/json/*` needs
-  none), so they work on any device. Missing, next and due pass `?days=` on to the API (7 if
+  over the window, its ticks standing on the rule (above it, so the rule and header sit where the
+  others' do), one per day of `?days=` (per week past 31) by JS setting `--tick`; due's with
+  missing's gap lapping it once a minute (`#hand`, a Web Animation), off the right end and back on
+  at the left, straddling the ends as the countdown's minute turns over (no gap when nothing is
+  due or under `prefers-reduced-motion`); status's a signal trace with one pulse. They send no
+  token (`/json/*` needs none), so they work on any device. Missing, next and due pass `?days=` on to the API (7 if
   absent, as there) and show the window in the header. The line under the title is the age of
   `last_seen_at` (GPA) or `updated_at` (the rest), "Updated 2 h ago", preceded by the error when
   a refresh fails. On the GPA page the unit label is a `<button>` styled as plain header text:
