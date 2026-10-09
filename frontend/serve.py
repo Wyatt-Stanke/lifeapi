@@ -21,7 +21,7 @@ INDEX = HERE / "index.html"
 # /big/<name> shows the API's /json/<name> full-screen. They share big.html, which gets its name
 # from the server, since a --host-page serves one at /.
 BIG = HERE / "big.html"
-PAGES = {f"/big/{name}": name for name in ("gpa", "missing", "next")}
+PAGES = {f"/big/{name}": name for name in ("gpa", "missing", "next", "due", "status")}
 # Old addresses of pages, redirected so bookmarks keep working.
 MOVED = {"/biggpa": "/big/gpa"}
 

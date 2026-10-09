@@ -15,6 +15,8 @@
   :root { --bg: #fff; --fg: #000; }
   :root[data-big="missing"] { --bg: #da291c; --fg: #fff; } /* Swiss red */
   :root[data-big="next"] { --bg: #fc0; --fg: #000; } /* Swiss Post yellow */
+  :root[data-big="due"] { --bg: #0046ad; --fg: #fff; } /* blue */
+  :root[data-big="status"] { --bg: #000; --fg: #fff; }
   * { margin: 0; box-sizing: border-box; }
   html, body { height: 100%; background: var(--bg); color: var(--fg); }
   body {
@@ -24,8 +26,12 @@
   main {
     min-height: 100%;
     display: grid;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto 1fr; /* the header, then the rest at the bottom */
+    grid-template-columns: minmax(0, 1fr); /* lets the caption's lines cut off, not widen the page */
     padding: clamp(16px, 3vw, 48px);
+    /* The value's font hangs its descent below its 0.78em line box. There's no ink there, but
+       it would make the page scroll. */
+    overflow: hidden;
   }
   header {
     display: flex;
@@ -54,6 +60,28 @@
     -webkit-tap-highlight-color: transparent;
   }
   #unit:focus-visible { outline: 2px solid var(--fg); outline-offset: 0.15em; }
+  /* The due page's item, just above the countdown. */
+  #caption {
+    align-self: end;
+    padding-bottom: 0.5em; /* not a margin, so fit() counts it */
+    font-size: clamp(18px, 2.6vw, 40px);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+  }
+  #what {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+  #where {
+    display: block;
+    font-weight: 400;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   #value {
     align-self: end;
     justify-self: start;
@@ -73,6 +101,7 @@
     <button id="unit" type="button">Percent</button>
     <span id="window"></span>
   </header>
+  <p id="caption" hidden><span id="what"></span><span id="where"></span></p>
   <p id="value" aria-live="polite">&nbsp;</p>
 </main>
 <script>
@@ -83,16 +112,20 @@ const PAGES = {
   gpa: { title: "GPA", heading: "Wyatt Stanke's GPA" },
   missing: { title: "Missing", heading: "Wyatt Stanke's missing work", window: "Last" },
   next: { title: "Upcoming", heading: "Wyatt Stanke's upcoming work", window: "Next" },
+  due: { title: "Due", heading: "Wyatt Stanke's next deadline", window: "Next" },
+  status: { title: "Status", heading: "Failing lifeapi sources" },
 };
 const page = PAGES[NAME];
-const isGpa = NAME === "gpa";
-// The counts' window, passed on to the API: ?days=, 7 by default as there.
+const isGpa = NAME === "gpa", isDue = NAME === "due";
+// The window counted over (or searched, for due), passed on to the API: ?days=, 7 by default
+// as there.
 const DAYS = new URLSearchParams(location.search).get("days") || "7";
-const url = isGpa ? "/api/json/gpa" : `/api/json/${NAME}?days=${encodeURIComponent(DAYS)}`;
+const url = `/api/json/${NAME}` + (page.window ? `?days=${encodeURIComponent(DAYS)}` : "");
 
 const out = document.getElementById("value");
 const unitButton = document.getElementById("unit");
 const updated = document.getElementById("updated");
+const caption = document.getElementById("caption");
 const icon = document.getElementById("icon");
 const iconCanvas = Object.assign(document.createElement("canvas"), { width: 64, height: 64 });
 const style = getComputedStyle(document.documentElement);
@@ -102,31 +135,39 @@ const fg = style.getPropertyValue("--fg").trim();
 document.title = page.title;
 document.getElementById("heading").textContent = page.heading;
 document.getElementById("theme").content = bg;
-// The GPA's header has the unit switch, a count's the window it counts over.
-if (isGpa) document.getElementById("window").remove();
-else {
-  unitButton.remove();
+// The header's right side: the GPA's unit switch, or the window of the pages that have one.
+if (!isGpa) unitButton.remove();
+if (page.window) {
   document.getElementById("window").textContent =
     `${page.window} ${DAYS} ${DAYS === "1" ? "day" : "days"}`;
-}
+} else document.getElementById("window").remove();
+if (!isDue) caption.remove();
 
-// Sizes the number to fill the content width, capped so it fits the viewport's height.
+// Sizes the number to fill the content width, capped so it fits the height left under the
+// header (and caption), and at 80% of the viewport's.
 function fit() {
   const main = out.parentElement;
   const cs = getComputedStyle(main);
   const width = main.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const above = [...main.children].filter(el => el !== out)
+    .reduce((sum, el) => sum + el.getBoundingClientRect().height, 0);
+  const height = innerHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - above;
   out.style.fontSize = "100px";
   const size = 100 * width / out.getBoundingClientRect().width;
-  out.style.fontSize = `${Math.min(size, innerHeight * 0.8)}px`;
+  const lineHeight = parseFloat(getComputedStyle(out).lineHeight) / 100;
+  out.style.fontSize = `${Math.min(size, height / lineHeight, innerHeight * 0.8)}px`;
 }
 
 const ERRORS = { 404: "No GPA yet", 422: "Invalid days", 502: "API unreachable", 503: "No data yet" };
 // Always three places, as Infinite Campus publishes it (99.150, not 99.15).
 const places = new Intl.NumberFormat("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+const deadline = new Intl.DateTimeFormat("en-US", {
+  weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+});
 const SCALE_KEY = "biggpa-scale"; // named when the page was /biggpa; renaming would forget the choice
 
-let value = null;      // the last value received (the GPA as a percentage, or a count)
-let seenAt = null;     // when the scraper last read the GPA (the API's last_seen_at)
+let data = null;       // the last JSON received
+let seenAt = null;     // when the scraper last read it (the API's last_seen_at or updated_at)
 let error = "";        // why the last refresh failed, if it did
 let fourScale = false; // show the GPA on the 4.0 scale instead of as a percentage
 try { fourScale = localStorage.getItem(SCALE_KEY) === "4"; } catch {}
@@ -141,13 +182,42 @@ function ago(date) {
   return `${days} ${days === 1 ? "day" : "days"} ago`;
 }
 
+// The time left until `due`, floored to the minute: "2d 4h", "3h 20m", "42m". With `short`,
+// only its largest unit ("2d", "3h", "42m"), for the favicon.
+function left(due, short = false) {
+  const mins = Math.max(0, Math.floor((due - Date.now()) / 60000));
+  const d = Math.floor(mins / 1440), h = Math.floor(mins / 60) % 24, m = mins % 60;
+  const [big, small] = d ? [`${d}d`, `${h}h`] : h ? [`${h}h`, `${m}m`] : [`${m}m`, ""];
+  return short || !small ? big : `${big} ${small}`;
+}
+
+// The value as shown, from the last JSON received; `short` for the favicon's few characters.
+// The 4.0 scale is the percentage mapped linearly (100% = 4.000), to the same three places.
+// Weighting can lift it past 4, as it lifts the percentage past 100. The countdown is worked out
+// here from due_at, not the API's minutes, so it keeps counting between refreshes.
+function shown(short = false) {
+  if (isGpa) return places.format(fourScale ? data.value / 25 : data.value);
+  if (!isDue) return String(data.value);
+  if (!data.due_at) return short ? "—" : "None";
+  return left(Date.parse(data.due_at), short);
+}
+
 // A failed refresh keeps the last value on screen and puts the error before the update time.
-// Counts have no update time (the API gives none), so their line is only ever the error.
 function renderUpdated() {
   const stamp = seenAt && `updated ${ago(seenAt)}`;
   const text = [error, stamp].filter(Boolean).join(" · ");
   updated.textContent = text ? text[0].toUpperCase() + text.slice(1) : " ";
   updated.title = seenAt ? seenAt.toLocaleString() : "";
+}
+
+// The due page's caption: the item, then its course and deadline. None when nothing is due.
+function renderCaption() {
+  caption.hidden = !data.due_at;
+  if (!data.due_at) return;
+  document.getElementById("what").textContent = data.title || "Untitled";
+  document.getElementById("where").textContent = [
+    data.course_name, `due ${deadline.format(new Date(data.due_at))}`,
+  ].filter(Boolean).join(" · ");
 }
 
 // Draws the value as the favicon, in the page's colours, on an opaque square so it reads on dark
@@ -175,7 +245,7 @@ function renderIcon(text) {
       });
     });
   } else {
-    // A count: one row, centred, shrunk to fit the width when it has several digits.
+    // One row, centred, shrunk to fit the width when it has several characters.
     ctx.font = font(60);
     ctx.font = font(Math.min(60, 60 * (size - 4) / ctx.measureText(text).width));
     const cap = ctx.measureText("0").actualBoundingBoxAscent;
@@ -185,26 +255,25 @@ function renderIcon(text) {
 }
 
 function render() {
-  // The 4.0 scale is the percentage mapped linearly (100% = 4.000), to the same three places.
-  // Weighting can lift it past 4, as it lifts the percentage past 100.
-  if (value != null) {
-    const text = isGpa ? places.format(fourScale ? value / 25 : value) : String(value);
+  if (data) {
+    const text = shown();
     out.textContent = text;
     document.title = `${page.title} - ${text}`;
-    renderIcon(text);
+    renderIcon(shown(true));
+    if (isDue) renderCaption();
   } else if (error) out.textContent = "—";
   unitButton.textContent = fourScale ? "4.0 scale" : "Percent";
   renderUpdated();
   fit();
+  schedule();
 }
 
 async function load() {
   try {
     const res = await fetch(url);
     if (res.ok) {
-      const body = await res.json();
-      value = body.value;
-      const seen = Date.parse(body.last_seen_at);
+      data = await res.json();
+      const seen = Date.parse(data.last_seen_at ?? data.updated_at);
       seenAt = Number.isNaN(seen) ? null : new Date(seen);
       error = "";
     } else {
@@ -214,6 +283,17 @@ async function load() {
     error = "API unreachable";
   }
   render();
+}
+
+// Redraws a minute after each render, for the "Updated" line. On the due page, as the countdown's
+// minute turns over instead, which is at the deadline's seconds, and once the deadline has passed
+// it fetches the next one.
+let timer;
+function schedule() {
+  const ms = isDue && data?.due_at ? Date.parse(data.due_at) - Date.now() : 0;
+  clearTimeout(timer);
+  if (ms > 0 && ms < 60000) timer = setTimeout(load, ms + 100);
+  else timer = setTimeout(render, ms > 0 ? ms % 60000 + 100 : 60 * 1000);
 }
 
 unitButton.addEventListener("click", () => {
@@ -231,7 +311,6 @@ load();
 // requestAnimationFrame, which hidden tabs never run. A frozen or discarded tab stops entirely,
 // so refresh as soon as it comes back, or the network does.
 setInterval(load, 3 * 60 * 1000);
-setInterval(renderUpdated, 60 * 1000);
 document.addEventListener("resume", load); // Chrome, after freezing the tab
 addEventListener("online", load);
 </script>

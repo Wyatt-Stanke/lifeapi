@@ -312,8 +312,25 @@ class GpaValue(BaseModel):
                                                 "source (UTC).")
 
 
+ITEMS_UPDATED_AT = ("When the stalest enabled source with items last finished a successful full "
+                    "run (UTC): how old the items behind the value may be. Each source's is "
+                    "`last_success_at` in `GET /sources`. Null if one has never succeeded.")
+
+
 class CountValue(BaseModel):
     value: int = Field(description="The count.", examples=[3])
+    updated_at: Timestamp | None = Field(description=ITEMS_UPDATED_AT)
+
+
+class DueValue(BaseModel):
+    value: int | None = Field(description="Whole minutes until the deadline. Null when nothing "
+                                          "is due in the window.", examples=[200])
+    due_at: Timestamp | None = Field(description="The deadline (UTC), the effective one as in "
+                                                 "items' `due_at`: the student's own if they "
+                                                 "changed it.")
+    title: str | None = Field(description="The item's title.", examples=["Lab 4: Titration"])
+    course_name: str | None = Field(description="The item's course.", examples=["AP Chemistry"])
+    updated_at: Timestamp | None = Field(description=ITEMS_UPDATED_AT)
 
 
 class StatusValue(BaseModel):
@@ -323,6 +340,10 @@ class StatusValue(BaseModel):
                                             "finished a successful full run: the age of the "
                                             "oldest data. Null if a source has never succeeded.",
                                 examples=[95])
+    updated_at: Timestamp | None = Field(description="When the stalest enabled source last "
+                                                     "finished a successful full run (UTC), "
+                                                     "`minutes` ago. Null if a source has never "
+                                                     "succeeded.")
 
 
 class NoteSettings(BaseModel):
@@ -589,7 +610,7 @@ announcements); those additions stay in lifeapi and never reach a platform.
 | Any new comments? | `GET /comments?days=3` (class and private comments, newest first) |
 | How am I doing in my classes? | `GET /grades` |
 | What's my GPA? | `GET /json/gpa` (`value` to three decimal places, a percentage that can exceed 100; `last_seen_at` says when it was last scraped) |
-| Just a number for a widget | `GET /min/{{name}}` (plain text) or `GET /json/{{name}}` (`{{"value": …}}`), where `name` is `gpa`, `missing` (overdue in the last `days`, default 7), `next` (due in the next `days`, default 7) or `status` (failing sources; the JSON adds `minutes` since the stalest source's last successful run) |
+| Just a number for a widget | `GET /min/{{name}}` (plain text) or `GET /json/{{name}}` (`{{"value": …}}`), where `name` is `gpa`, `missing` (overdue in the last `days`, default 7), `next` (due in the next `days`, default 7), `due` (minutes until the soonest of those; the JSON adds its `due_at`, `title` and `course_name`, and is null when nothing is due) or `status` (failing sources; the JSON adds `minutes` since the stalest source's last successful run). Every JSON but `gpa`'s (which has `last_seen_at`) adds `updated_at`, when the stalest source it's worked out from last succeeded |
 | How has my GPA changed? | `GET /history?gpa=true` (one row per change) |
 | How did my grade in X move? | `GET /grades` for its `id`, then `GET /history?id=…` (the grade and its scored assignments) |
 | Find a specific assignment | `GET /items?q=essay` |

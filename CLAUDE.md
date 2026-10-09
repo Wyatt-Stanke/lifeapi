@@ -220,7 +220,7 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   `/extra/assignments` and `/extra/commands`. The
   optional `LIFEAPI_API_TOKEN` auth (bearer header or `?token=` query param) applies to
   everything except `/health` and the single-value endpoints `/min/<name>` (plain-text number)
-  and `/json/<name>` (`{"value": …}`), for `gpa`, `missing`, `next` and `status`.
+  and `/json/<name>` (`{"value": …}`), for `gpa`, `missing`, `next`, `due` and `status`.
   Those are public so the `/big/<name>` pages and widgets work on any device; `_value()` registers both
   forms from one function, copying its signature so query params (`?days=`) work on both. Every list endpoint hides inactive rows unless
   `include_inactive=true`. The API imports the scraper's `REGISTRY` (to validate sync
@@ -444,24 +444,29 @@ API access stays at `/api/docs`.
   pages on each request, so page edits need only a browser refresh. Changes to `serve.py` need a restart.
   `--host-page HOST=PAGE` serves a `PAGES` entry at `/` when the `Host` header (port ignored) is `HOST`.
   Compose uses it to put `/big/gpa` at the root of `gpa.stan.ke`, a second domain on the same service.
-- `big.html` is the styled pages `/big/gpa`, `/big/missing` and `/big/next` (`/biggpa` redirects to
-  `/big/gpa`): each shows `GET /api/json/<name>` in large Inter (Google Fonts), sized to the window
-  by `fit()`, re-fetched every 3 minutes (a failed refresh keeps the last value). Since a
-  `--host-page` serves one at `/`, the page can't tell which it is from its URL: `serve.py` fills
-  `{{name}}` into `<html data-big>`. Each has its own colours, CSS variables set per `data-big`
-  that the favicon and `theme-color` read too: GPA black on white, missing white on Swiss red,
-  next black on Swiss Post yellow. They send no token (`/json/*` needs none), so they work on any
-  device. The counts pass `?days=` on to the API (7 if absent, as there) and show the window in
-  the header; their JSON has no timestamp, so the line under their title only shows errors.
-  On the GPA page the unit label is a `<button>` styled as plain header text: clicking it switches
-  between the percentage and the 4.0 scale (the percentage / 25, still to three places), and
-  the choice is kept in `localStorage`. The line under the title is the age of
-  `last_seen_at` ("Updated 2 h ago"), preceded by the error when a refresh fails.
-  The tab title (`GPA - 99.150`, `Missing - 3`) and favicon follow the shown value, so a
-  background tab shows it: `renderIcon()` draws a count as one centred row, and the GPA's digits
-  before the point over the three after it on a 64px canvas, right-aligned in three fixed columns
-  (` 99` over `150`). Nothing may wait on `requestAnimationFrame` (hidden tabs never run it);
-  timers are throttled to about once a minute there, and a frozen tab refreshes on `resume`.
+- `big.html` is the styled pages `/big/gpa`, `/big/missing`, `/big/next`, `/big/due` and
+  `/big/status` (`/biggpa` redirects to `/big/gpa`): each shows `GET /api/json/<name>` in large
+  Inter (Google Fonts), sized by `fit()` to the width and to the height left under the header,
+  re-fetched every 3 minutes (a failed refresh keeps the last value). Since a `--host-page` serves
+  one at `/`, the page can't tell which it is from its URL: `serve.py` fills `{{name}}` into
+  `<html data-big>`. Each has its own colours, CSS variables set per `data-big` that the favicon
+  and `theme-color` read too: GPA black on white, missing white on Swiss red, next black on Swiss
+  Post yellow, due white on blue, status white on black. They send no token (`/json/*` needs
+  none), so they work on any device. Missing, next and due pass `?days=` on to the API (7 if
+  absent, as there) and show the window in the header. The line under the title is the age of
+  `last_seen_at` (GPA) or `updated_at` (the rest), "Updated 2 h ago", preceded by the error when
+  a refresh fails. On the GPA page the unit label is a `<button>` styled as plain header text:
+  clicking it switches between the percentage and the 4.0 scale (the percentage / 25, still to
+  three places), and the choice is kept in `localStorage`. The due page counts down to `due_at`
+  itself ("3h 20m", "2d 4h"; "None" when nothing is due), with the item's title, course and
+  deadline in a caption above it. `schedule()` re-arms one timer on every render: a minute later,
+  or on the due page when the countdown's minute turns over (at the deadline's seconds), and at
+  the deadline it fetches the next one. The tab title (`GPA - 99.150`, `Due - 3h 20m`) and favicon
+  follow the shown value, so a background tab shows it: `renderIcon()` draws one centred row
+  (the countdown's largest unit only), and the GPA's digits before the point over the three
+  after it on a 64px canvas, right-aligned in three fixed columns (` 99` over `150`). Nothing may
+  wait on `requestAnimationFrame` (hidden tabs never run it); timers are throttled to about once
+  a minute there, and a frozen tab refreshes on `resume`.
 - `index.html` holds all the JS in one inline script. A tiny `h(tag, attrs, ...kids)`
   helper builds the DOM. Views are async functions that return nodes, and the hash router
   calls them as `view(...pathArgs, params)`. Routes are `#/item/<source>/<id>`,
