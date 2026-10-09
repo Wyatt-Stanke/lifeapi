@@ -1,8 +1,8 @@
 """Dev server for the explorer frontend: `python frontend/serve.py [--port 8080] [--api http://127.0.0.1:8000]
-[--host-page gpa.example.com=/biggpa ...]`.
+[--host-page gpa.example.com=/big/gpa ...]`.
 
 Proxies /api/* (GET, POST, PUT, PATCH and DELETE) to the API, so the page can call it same-origin without the
-API needing CORS, serves the standalone pages in PAGES (e.g. /biggpa), and serves index.html for every
+API needing CORS, serves the standalone pages in PAGES (e.g. /big/gpa), and serves index.html for every
 other path (so `/<source URL>` links reach the page's link resolver). `--host-page` serves a standalone
 page at / for requests to that Host, so one server can back a second domain. Stdlib only.
 """
@@ -18,7 +18,12 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 INDEX = HERE / "index.html"
 # Standalone pages, outside the explorer's hash router. Re-read per request, like index.html.
-PAGES = {"/biggpa": HERE / "biggpa.html"}
+# /big/<name> shows the API's /json/<name> full-screen. They share big.html, which gets its name
+# from the server, since a --host-page serves one at /.
+BIG = HERE / "big.html"
+PAGES = {f"/big/{name}": name for name in ("gpa", "missing", "next")}
+# Old addresses of pages, redirected so bookmarks keep working.
+MOVED = {"/biggpa": "/big/gpa"}
 
 
 def make_handler(api: str, host_pages: dict[str, str]) -> type[BaseHTTPRequestHandler]:
@@ -43,13 +48,21 @@ def make_handler(api: str, host_pages: dict[str, str]) -> type[BaseHTTPRequestHa
             self._proxy(self.path[len("/api"):], method, body)
 
         def do_GET(self) -> None:
+            path = self.path.partition("?")[0]
             if self.path.startswith("/api/"):
                 target = self.path[len("/api"):]
             elif self.path == "/favicon.ico":
                 self._send(404, "text/plain", b"Not found")
                 return
-            elif page := PAGES.get(self.path.split("?", 1)[0].rstrip("/") or self._host_page()):
-                self._send(200, "text/html; charset=utf-8", page.read_bytes())
+            elif moved := MOVED.get(path.rstrip("/")):
+                self.send_response(301)
+                self.send_header("Location", moved + self.path[len(path):])  # keeps the query
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            elif name := PAGES.get(path.rstrip("/") or self._host_page()):
+                page = BIG.read_bytes().replace(b"{{name}}", name.encode())
+                self._send(200, "text/html; charset=utf-8", page)
                 return
             else:
                 # Every other path gets the page, which handles `/<source URL>` links itself

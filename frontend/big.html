@@ -1,16 +1,22 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-big="{{name}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GPA</title>
+<meta name="theme-color" id="theme">
+<title>&nbsp;</title>
 <link rel="icon" id="icon">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..900&display=swap">
 <style>
+  /* Each page's colours: the background, and everything drawn on it. The favicon and the
+     browser's theme colour read them from here. */
+  :root { --bg: #fff; --fg: #000; }
+  :root[data-big="missing"] { --bg: #da291c; --fg: #fff; } /* Swiss red */
+  :root[data-big="next"] { --bg: #fc0; --fg: #000; } /* Swiss Post yellow */
   * { margin: 0; box-sizing: border-box; }
-  html, body { height: 100%; background: #fff; color: #000; }
+  html, body { height: 100%; background: var(--bg); color: var(--fg); }
   body {
     font-family: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -25,7 +31,7 @@
     display: flex;
     justify-content: space-between;
     gap: 1em;
-    border-top: clamp(4px, 0.6vw, 10px) solid #000;
+    border-top: clamp(4px, 0.6vw, 10px) solid var(--fg);
     padding-top: 0.6em;
     font-size: clamp(14px, 1.4vw, 22px);
     font-weight: 700;
@@ -37,7 +43,8 @@
     font-weight: 400;
     font-variant-numeric: tabular-nums;
   }
-  /* Switches the unit. A button for keyboards and screen readers, styled as plain header text. */
+  #window { align-self: start; text-align: right; }
+  /* Switches the GPA's unit. A button for keyboards and screen readers, styled as plain header text. */
   #unit {
     all: unset;
     align-self: start; /* level with the title, not centred on the two lines beside it */
@@ -46,8 +53,8 @@
     -webkit-user-select: none;
     -webkit-tap-highlight-color: transparent;
   }
-  #unit:focus-visible { outline: 2px solid #000; outline-offset: 0.15em; }
-  #gpa {
+  #unit:focus-visible { outline: 2px solid var(--fg); outline-offset: 0.15em; }
+  #value {
     align-self: end;
     justify-self: start;
     white-space: nowrap;
@@ -62,17 +69,46 @@
 <body>
 <main>
   <header>
-    <div>Wyatt Stanke's GPA<span id="updated">&nbsp;</span></div>
+    <div><span id="heading"></span><span id="updated">&nbsp;</span></div>
     <button id="unit" type="button">Percent</button>
+    <span id="window"></span>
   </header>
-  <p id="gpa" aria-live="polite">&nbsp;</p>
+  <p id="value" aria-live="polite">&nbsp;</p>
 </main>
 <script>
-const out = document.getElementById("gpa");
+// Which /big/<name> page this is: serve.py fills in data-big, since --host-page serves one at /.
+// Each shows the API's /json/<name>.
+const NAME = document.documentElement.dataset.big;
+const PAGES = {
+  gpa: { title: "GPA", heading: "Wyatt Stanke's GPA" },
+  missing: { title: "Missing", heading: "Wyatt Stanke's missing work", window: "Last" },
+  next: { title: "Upcoming", heading: "Wyatt Stanke's upcoming work", window: "Next" },
+};
+const page = PAGES[NAME];
+const isGpa = NAME === "gpa";
+// The counts' window, passed on to the API: ?days=, 7 by default as there.
+const DAYS = new URLSearchParams(location.search).get("days") || "7";
+const url = isGpa ? "/api/json/gpa" : `/api/json/${NAME}?days=${encodeURIComponent(DAYS)}`;
+
+const out = document.getElementById("value");
 const unitButton = document.getElementById("unit");
 const updated = document.getElementById("updated");
 const icon = document.getElementById("icon");
 const iconCanvas = Object.assign(document.createElement("canvas"), { width: 64, height: 64 });
+const style = getComputedStyle(document.documentElement);
+const bg = style.getPropertyValue("--bg").trim();
+const fg = style.getPropertyValue("--fg").trim();
+
+document.title = page.title;
+document.getElementById("heading").textContent = page.heading;
+document.getElementById("theme").content = bg;
+// The GPA's header has the unit switch, a count's the window it counts over.
+if (isGpa) document.getElementById("window").remove();
+else {
+  unitButton.remove();
+  document.getElementById("window").textContent =
+    `${page.window} ${DAYS} ${DAYS === "1" ? "day" : "days"}`;
+}
 
 // Sizes the number to fill the content width, capped so it fits the viewport's height.
 function fit() {
@@ -84,15 +120,15 @@ function fit() {
   out.style.fontSize = `${Math.min(size, innerHeight * 0.8)}px`;
 }
 
-const ERRORS = { 404: "No GPA yet", 502: "API unreachable", 503: "No data yet" };
+const ERRORS = { 404: "No GPA yet", 422: "Invalid days", 502: "API unreachable", 503: "No data yet" };
 // Always three places, as Infinite Campus publishes it (99.150, not 99.15).
 const places = new Intl.NumberFormat("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
-const SCALE_KEY = "biggpa-scale";
+const SCALE_KEY = "biggpa-scale"; // named when the page was /biggpa; renaming would forget the choice
 
-let gpa = null;        // the last GPA received, as a percentage
-let seenAt = null;     // when the scraper last read it (the API's last_seen_at)
+let value = null;      // the last value received (the GPA as a percentage, or a count)
+let seenAt = null;     // when the scraper last read the GPA (the API's last_seen_at)
 let error = "";        // why the last refresh failed, if it did
-let fourScale = false; // show the 4.0 scale instead of the percentage
+let fourScale = false; // show the GPA on the 4.0 scale instead of as a percentage
 try { fourScale = localStorage.getItem(SCALE_KEY) === "4"; } catch {}
 
 // e.g. "just now", "25 min ago", "2 h ago", "3 days ago"
@@ -105,44 +141,56 @@ function ago(date) {
   return `${days} ${days === 1 ? "day" : "days"} ago`;
 }
 
-// A failed refresh keeps the last GPA on screen and puts the error before the update time.
+// A failed refresh keeps the last value on screen and puts the error before the update time.
+// Counts have no update time (the API gives none), so their line is only ever the error.
 function renderUpdated() {
   const stamp = seenAt && `updated ${ago(seenAt)}`;
   const text = [error, stamp].filter(Boolean).join(" · ");
-  updated.textContent = text ? text[0].toUpperCase() + text.slice(1) : " ";
+  updated.textContent = text ? text[0].toUpperCase() + text.slice(1) : " ";
   updated.title = seenAt ? seenAt.toLocaleString() : "";
 }
 
-// Draws the GPA as the favicon: the digits before the point on the top half, the three after it
-// on the bottom, the point implied, right-aligned in three columns so 99.150 reads " 99" over
-// "150". Each digit is centred in its column (fillText's maxWidth squeezes it to fit), so the
-// columns line up whatever the font's digit widths. A canvas, not an SVG icon, because an SVG
-// favicon can't use the page's web font.
+// Draws the value as the favicon, in the page's colours, on an opaque square so it reads on dark
+// tab strips too. A canvas, not an SVG icon, because an SVG favicon can't use the page's web font.
 function renderIcon(text) {
-  const [whole, frac] = text.split(".");
   const ctx = iconCanvas.getContext("2d");
-  const size = iconCanvas.width, half = size / 2, column = (size - 2) / 3;
-  ctx.fillStyle = "#fff"; // opaque, so it reads on dark tab strips too
+  const size = iconCanvas.width, half = size / 2;
+  const font = px => `800 ${px}px Inter, "Helvetica Neue", Helvetica, Arial, sans-serif`;
+  ctx.fillStyle = bg;
   ctx.fillRect(0, 0, size, size);
-  ctx.fillStyle = "#000";
-  ctx.font = `800 38px Inter, "Helvetica Neue", Helvetica, Arial, sans-serif`;
+  ctx.fillStyle = fg;
   ctx.textAlign = "center";
-  const cap = ctx.measureText("0").actualBoundingBoxAscent;
-  [whole, frac].forEach((digits, row) => {
-    [...digits.padStart(3).slice(-3)].forEach((digit, i) => {
-      ctx.fillText(digit, 1 + column * (i + 0.5), row * half + (half + cap) / 2, column);
+  if (isGpa) {
+    // The digits before the point on the top half, the three after it on the bottom, the point
+    // implied, right-aligned in three columns so 99.150 reads " 99" over "150". Each digit is
+    // centred in its column (fillText's maxWidth squeezes it to fit), so the columns line up
+    // whatever the font's digit widths.
+    const [whole, frac] = text.split(".");
+    const column = (size - 2) / 3;
+    ctx.font = font(38);
+    const cap = ctx.measureText("0").actualBoundingBoxAscent;
+    [whole, frac].forEach((digits, row) => {
+      [...digits.padStart(3).slice(-3)].forEach((digit, i) => {
+        ctx.fillText(digit, 1 + column * (i + 0.5), row * half + (half + cap) / 2, column);
+      });
     });
-  });
+  } else {
+    // A count: one row, centred, shrunk to fit the width when it has several digits.
+    ctx.font = font(60);
+    ctx.font = font(Math.min(60, 60 * (size - 4) / ctx.measureText(text).width));
+    const cap = ctx.measureText("0").actualBoundingBoxAscent;
+    ctx.fillText(text, half, (size + cap) / 2);
+  }
   icon.href = iconCanvas.toDataURL("image/png");
 }
 
 function render() {
   // The 4.0 scale is the percentage mapped linearly (100% = 4.000), to the same three places.
   // Weighting can lift it past 4, as it lifts the percentage past 100.
-  if (gpa != null) {
-    const text = places.format(fourScale ? gpa / 25 : gpa);
+  if (value != null) {
+    const text = isGpa ? places.format(fourScale ? value / 25 : value) : String(value);
     out.textContent = text;
-    document.title = `GPA - ${text}`;
+    document.title = `${page.title} - ${text}`;
     renderIcon(text);
   } else if (error) out.textContent = "—";
   unitButton.textContent = fourScale ? "4.0 scale" : "Percent";
@@ -152,10 +200,10 @@ function render() {
 
 async function load() {
   try {
-    const res = await fetch("/api/json/gpa");
+    const res = await fetch(url);
     if (res.ok) {
       const body = await res.json();
-      gpa = body.value;
+      value = body.value;
       const seen = Date.parse(body.last_seen_at);
       seenAt = Number.isNaN(seen) ? null : new Date(seen);
       error = "";
