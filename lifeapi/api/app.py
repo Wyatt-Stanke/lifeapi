@@ -37,7 +37,7 @@ from . import commands, drafts
 from .schemas import (
     DESCRIPTION, DONE_STATUSES, TAGS, Action, AssignmentEdit, Browser, BrowserSettings,
     ClearedSyncRequests, CommandRequest, CommandResult, ConversionDraft, CountValue, Course,
-    DebugSnapshot, DueSettings, Error, GpaValue, Grade, Health, HistoryRecord, Item, NewAssignment, NoteSettings,
+    DebugSnapshot, DueSettings, DueValue, Error, GpaValue, Grade, Health, HistoryRecord, Item, NewAssignment, NoteSettings,
     RecentComment, Run, RunDetail, Schedule, ScheduleSettings, SourceStatus, StatusSettings, StatusValue,
     SyncRequest, errors,
 )
@@ -871,14 +871,15 @@ def history(
 
 # Single values for widgets and displays: each is served at /min/<name> as a bare number in
 # text/plain and at /json/<name> as a small JSON object. Neither needs a token. Bodies are
-# written by hand so the GPA keeps its trailing zeros (99.150 would serialize as 99.15).
+# written by hand so the GPA keeps its trailing zeros (99.150 would serialize as 99.15). A value
+# that can be absent (`due`, when nothing is) is an empty /min body and null in the JSON.
 
 MIN_RESPONSES = {200: {"content": {"text/plain": {"schema": {"type": "string"}}}}}
 
 
 def _value(name: str, summary: str, doc: str, model: type, responses: dict | None = None):
-    """Register `fn(conn, **query params) -> (number as text, extra JSON fields)` as GET
-    /min/<name> and GET /json/<name>. Both take `fn`'s parameters (its `conn` defaults to
+    """Register `fn(conn, **query params) -> (number as text or None, extra JSON fields)` as
+    GET /min/<name> and GET /json/<name>. Both take `fn`'s parameters (its `conn` defaults to
     `Depends(db)`, the rest to `Query(...)`), so FastAPI parses them the same way."""
     op = name.title()
     responses = {**(responses or {}), **errors(503)}
@@ -888,12 +889,13 @@ def _value(name: str, summary: str, doc: str, model: type, responses: dict | Non
     def register(fn):
         def as_text(**kwargs: Any) -> Response:
             text, _ = fn(**kwargs)
-            return PlainTextResponse(text)
+            return PlainTextResponse("" if text is None else text)
 
         def as_json(**kwargs: Any) -> Response:
             text, fields = fn(**kwargs)
             rest = "".join(f", {json.dumps(k)}: {json.dumps(v)}" for k, v in fields.items())
-            return Response(f'{{"value": {text}{rest}}}', media_type="application/json")
+            value = "null" if text is None else text
+            return Response(f'{{"value": {value}{rest}}}', media_type="application/json")
 
         for route in (as_text, as_json):
             route.__signature__ = inspect.signature(fn)  # what FastAPI reads parameters from
@@ -907,9 +909,33 @@ def _value(name: str, summary: str, doc: str, model: type, responses: dict | Non
     return register
 
 
+def _updated_at(conn: sqlite3.Connection, sources: list[str]) -> str | None:
+    """When the stalest of `sources` last finished a successful full run (each one's
+    `last_success_at` in /sources), so how old a value worked out from them may be. None if
+    one never has."""
+    if not sources:
+        return None
+    marks = ",".join("?" * len(sources))
+    finished = dict(conn.execute(
+        f"""SELECT source, MAX(finished_at) FROM scrape_runs
+            WHERE ok=1 AND partial IS NULL AND source IN ({marks}) GROUP BY source""", sources,
+    ).fetchall())
+    if not all(finished.get(name) for name in sources):
+        return None
+    return min(finished.values())
+
+
+def _item_sources(conn: sqlite3.Connection) -> list[str]:
+    """The enabled sources that have stored items: the ones item values are worked out from
+    (Infinite Campus has only grades)."""
+    stored = {row[0] for row in conn.execute("SELECT DISTINCT source FROM items")}
+    return [name for name, cls in REGISTRY.items() if cls.enabled and name in stored]
+
+
 def _count(conn: sqlite3.Connection, query: tuple[str, list[Any]]) -> tuple[str, dict]:
     sql, args = query
-    return str(conn.execute(sql, args).fetchone()[0]), {}
+    count = conn.execute(sql, args).fetchone()[0]
+    return str(count), {"updated_at": _updated_at(conn, _item_sources(conn))}
 
 
 @_value("gpa", "Overall GPA, as a percentage", model=GpaValue,
@@ -954,10 +980,31 @@ def _next_count(
     return _count(conn, _due_sql(now, now + timedelta(days=days), what="COUNT(*)"))
 
 
+@_value("due", "Minutes until the next deadline", model=DueValue,
+        doc="Minutes until the soonest deadline among the items `GET /items/upcoming` lists "
+            "for the same `days` (so of those `next` counts): unfinished and due between now "
+            "and `days` days from now. Empty, or null in the JSON, when nothing is. The JSON "
+            "adds that item's deadline, title and course.")
+def _due(
+    days: int = Query(7, ge=1, le=365, description="How many days ahead to look."),
+    conn: sqlite3.Connection = Depends(db),
+) -> tuple[str | None, dict]:
+    now = datetime.now(timezone.utc)
+    sql, args = _due_sql(now, now + timedelta(days=days))
+    row = conn.execute(sql + " ORDER BY due_at LIMIT 1", args).fetchone()
+    updated_at = _updated_at(conn, _item_sources(conn))
+    if row is None:
+        return None, {"due_at": None, "title": None, "course_name": None, "updated_at": updated_at}
+    minutes = int((datetime.fromisoformat(row["due_at"]) - now).total_seconds() // 60)
+    return str(minutes), {"due_at": row["due_at"], "title": row["title"],
+                          "course_name": row["course_name"], "updated_at": updated_at}
+
+
 @_value("status", "Number of failing sources", model=StatusValue,
         doc="How many enabled sources' most recent run failed, so 0 means every source is "
             "fine. `GET /sources` (behind the token) says which, and why. The JSON adds "
-            "`minutes`: how stale the stalest source is.")
+            "`updated_at`, when the stalest source last succeeded, and `minutes`, how long "
+            "ago that was.")
 def _status(conn: sqlite3.Connection = Depends(db)) -> tuple[str, dict]:
     enabled = [name for name, cls in REGISTRY.items() if cls.enabled]
     marks = ",".join("?" * len(enabled))
@@ -967,16 +1014,12 @@ def _status(conn: sqlite3.Connection = Depends(db)) -> tuple[str, dict]:
               USING (source, run_id)
             WHERE r.ok=0 AND r.source IN ({marks})""", enabled,
     ).fetchone()[0]
-    # Each enabled source's last successful full run (`last_success_at` in /sources).
-    updated = dict(conn.execute(
-        f"""SELECT source, MAX(finished_at) FROM scrape_runs
-            WHERE ok=1 AND partial IS NULL AND source IN ({marks}) GROUP BY source""", enabled,
-    ).fetchall())
+    updated_at = _updated_at(conn, enabled)
     minutes = None
-    if enabled and all(updated.get(name) for name in enabled):
-        oldest = datetime.fromisoformat(min(updated[name] for name in enabled))
-        minutes = int((datetime.now(timezone.utc) - oldest).total_seconds() // 60)
-    return str(failing), {"minutes": minutes}
+    if updated_at:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(updated_at)
+        minutes = int(age.total_seconds() // 60)
+    return str(failing), {"minutes": minutes, "updated_at": updated_at}
 
 
 # Turning announcements into assignments. Assignments made here are items like any other

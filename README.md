@@ -207,9 +207,9 @@ The container has its own browser profile, separate from
 2. Under Environment Variables, set the required variables listed above.
 3. Give the `frontend` service a domain with the container port, for example
    `https://lifeapi.example.com:8080`. Leave `api` and `scraper` without a domain.
-   A second domain on `frontend` can show the big GPA page at its root: list both
-   (comma-separated) and add `--host-page <domain>=/biggpa` to its command in
-   `docker-compose.yaml`.
+   A second domain on `frontend` can show a big-number page (`/big/gpa`, `/big/missing`,
+   `/big/next`, `/big/due` or `/big/status`) at its root: list both (comma-separated) and add
+   `--host-page <domain>=/big/gpa` to its command in `docker-compose.yaml`.
 4. Deploy. Watch the `scraper` logs for the first run. The first Google Classroom run
    reads every detail page and takes about 15 minutes.
 
@@ -278,7 +278,7 @@ All list endpoints return only items still present at the source, unless you pas
 | `GET /courses` | Classes per source. |
 | `GET /grades` | Infinite Campus grades. Filters: `source`, `term`. |
 | `GET /history` | Every change to grades, GPAs, category totals, assignment scores and item statuses/scores, newest first, kept for good. Filters: `source`, `kind` (`grade`, `entry`, `item`), `id` (a grade's id includes its assignments), `gpa=true`, `since`, `limit`. |
-| `GET /min/{name}`, `GET /json/{name}` | One number, as plain text (`/min`) or JSON `{"value": …}` (`/json`). Needs no token. `name` is `gpa` (cumulative weighted GPA, a percentage always written to three decimal places, e.g. `99.150`, that weighting can lift above 100; the JSON adds `last_seen_at`), `missing` (items from `/items/missing` due in the last `?days=`, default 7), `next` (unfinished items due in the next `?days=`, default 7) or `status` (enabled sources whose last run failed; the JSON adds `minutes`, the age of the stalest source's last successful full run). |
+| `GET /min/{name}`, `GET /json/{name}` | One number, as plain text (`/min`) or JSON `{"value": …}` (`/json`). Needs no token. `name` is `gpa` (cumulative weighted GPA, a percentage always written to three decimal places, e.g. `99.150`, that weighting can lift above 100; the JSON adds `last_seen_at`), `missing` (items from `/items/missing` due in the last `?days=`, default 7), `next` (unfinished items due in the next `?days=`, default 7), `due` (minutes until the soonest of those; the JSON adds its `due_at`, `title` and `course_name`, and the value is empty, or null, when nothing is due) or `status` (enabled sources whose last run failed; the JSON adds `minutes`, the age of the stalest source's last successful full run). Every JSON but `gpa`'s adds `updated_at`: when the stalest source it's worked out from (for items, the enabled sources with items) last finished a successful full run. |
 | `GET /sources` | Every source, whether it's enabled, its partial fetches, its schedule and next fetch, and its last run (`null` if never): when it ran, whether it was partial, whether it succeeded, the error, and counts. |
 | `PUT /sources/{source}/schedule` | Set how often a source is fetched: JSON `{"interval_minutes": 30}`, optionally with `"partial"` and `"full_every"`. See [Schedules](#schedules-and-partial-fetches). |
 | `DELETE /sources/{source}/schedule` | Back to the default schedule. |
