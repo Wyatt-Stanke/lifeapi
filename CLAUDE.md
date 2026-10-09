@@ -451,7 +451,14 @@ API access stays at `/api/docs`.
   one at `/`, the page can't tell which it is from its URL: `serve.py` fills `{{name}}` into
   `<html data-big>`. Each has its own colours, CSS variables set per `data-big` that the favicon
   and `theme-color` read too: GPA black on white, missing white on Swiss red, next black on Swiss
-  Post yellow, due white on blue, status white on black. They send no token (`/json/*` needs
+  Post yellow, due white on blue, status white on black. The rule above the header (`#rule`,
+  absolutely positioned in it, drawn with gradients in `--fg`) is each page's only ornament, and
+  differs per page: GPA's solid; missing's with one column of twelve knocked out; next's a ruler
+  over the window, ticked per day of `?days=` (per week past 31) by JS setting `--tick`; due's
+  the second hand of the SBB station clock, a rod whose disc (`#hand`, a Web Animation) sweeps it
+  in 58.5 s and waits at the end until the countdown's minute turns over, then starts again
+  (resting at the start when nothing is due or under `prefers-reduced-motion`); status's a
+  signal trace with one pulse. They send no token (`/json/*` needs
   none), so they work on any device. Missing, next and due pass `?days=` on to the API (7 if
   absent, as there) and show the window in the header. The line under the title is the age of
   `last_seen_at` (GPA) or `updated_at` (the rest), "Updated 2 h ago", preceded by the error when
