@@ -17,6 +17,11 @@
   :root[data-big="next"] { --bg: #fc0; --fg: #000; } /* Swiss Post yellow */
   :root[data-big="due"] { --bg: #0046ad; --fg: #fff; } /* blue */
   :root[data-big="status"] { --bg: #000; --fg: #fff; }
+  /* The rule along the top, the page's only ornament: GPA's is solid, and each of the others is a
+     variation on it about what its page counts. --bar is its height, --stroke the thin ones' lines. */
+  :root { --rule: clamp(4px, 0.6vw, 10px); --stroke: calc(var(--rule) / 2); --bar: var(--rule); }
+  :root[data-big="next"] { --bar: calc(var(--rule) * 2); }
+  :root[data-big="due"], :root[data-big="status"] { --bar: calc(var(--rule) * 3); }
   * { margin: 0; box-sizing: border-box; }
   html, body { height: 100%; background: var(--bg); color: var(--fg); }
   body {
@@ -34,15 +39,54 @@
     overflow: hidden;
   }
   header {
+    position: relative; /* for #rule */
     display: flex;
     justify-content: space-between;
     gap: 1em;
-    border-top: clamp(4px, 0.6vw, 10px) solid var(--fg);
-    padding-top: 0.6em;
+    padding-top: calc(var(--bar) + 0.6em);
     font-size: clamp(14px, 1.4vw, 22px);
     font-weight: 700;
     letter-spacing: -0.01em;
     line-height: 1.2;
+  }
+  /* Drawn with gradients, so every part takes --fg. Out of the header's flex layout. */
+  #rule { position: absolute; inset: 0 0 auto; height: var(--bar); background: var(--fg); }
+  /* Missing: a piece missing, one column of a 12-column grid. */
+  :root[data-big="missing"] #rule {
+    background: linear-gradient(90deg, var(--fg) 58.333%, transparent 0 66.667%, var(--fg) 0);
+  }
+  /* Next: a ruler over the days ahead, with a tick at the start of each (--tick apart, set from
+     ?days=) and one at the end. */
+  :root[data-big="next"] #rule {
+    background:
+      linear-gradient(var(--fg), var(--fg)) bottom / 100% var(--stroke) no-repeat,
+      linear-gradient(90deg, transparent calc(100% - var(--stroke)), var(--fg) 0),
+      repeating-linear-gradient(90deg, var(--fg) 0 var(--stroke), transparent 0 var(--tick, calc(100% / 7)));
+  }
+  /* Due: the second hand of Hans Hilfiker's Swiss railway clock, a rod with a disc on it. The
+     disc is #hand's, which spans the rod less the disc's width, so translateX(100%) takes it to
+     the end. */
+  :root[data-big="due"] #rule {
+    background: linear-gradient(var(--fg), var(--fg)) center / 100% var(--stroke) no-repeat;
+  }
+  #hand { position: absolute; inset: 0 var(--bar) 0 0; }
+  #hand::after {
+    content: "";
+    position: absolute;
+    width: var(--bar);
+    height: var(--bar);
+    border-radius: 50%;
+    background: var(--fg);
+  }
+  /* Status: a signal trace, flat but for one pulse, in the eleventh of twelve columns. */
+  :root[data-big="status"] #rule {
+    background:
+      linear-gradient(90deg, var(--fg) 83.333%, transparent 0 91.667%, var(--fg) 0)
+        bottom / 100% var(--stroke) no-repeat,
+      linear-gradient(90deg, transparent 83.333%, var(--fg) 0 91.667%, transparent 0)
+        top / 100% var(--stroke) no-repeat,
+      linear-gradient(90deg, transparent 83.333%, var(--fg) 0 calc(83.333% + var(--stroke)),
+        transparent 0 calc(91.667% - var(--stroke)), var(--fg) 0 91.667%, transparent 0);
   }
   #updated {
     display: block;
@@ -97,6 +141,7 @@
 <body>
 <main>
   <header>
+    <i id="rule" aria-hidden="true"><i id="hand"></i></i>
     <div><span id="heading"></span><span id="updated">&nbsp;</span></div>
     <button id="unit" type="button">Percent</button>
     <span id="window"></span>
@@ -126,6 +171,8 @@ const out = document.getElementById("value");
 const unitButton = document.getElementById("unit");
 const updated = document.getElementById("updated");
 const caption = document.getElementById("caption");
+const rule = document.getElementById("rule");
+const hand = document.getElementById("hand");
 const icon = document.getElementById("icon");
 const iconCanvas = Object.assign(document.createElement("canvas"), { width: 64, height: 64 });
 const style = getComputedStyle(document.documentElement);
@@ -141,7 +188,15 @@ if (page.window) {
   document.getElementById("window").textContent =
     `${page.window} ${DAYS} ${DAYS === "1" ? "day" : "days"}`;
 } else document.getElementById("window").remove();
-if (!isDue) caption.remove();
+if (!isDue) {
+  caption.remove();
+  hand.remove();
+}
+// The next page's ruler: a tick a day, or a week when the window is over a month.
+const days = Number(DAYS);
+if (NAME === "next" && Number.isInteger(days) && days > 0) {
+  rule.style.setProperty("--tick", `${100 * (days > 31 ? 7 : 1) / days}%`);
+}
 
 // Sizes the number to fill the content width, capped so it fits the height left under the
 // header (and caption), and at 80% of the viewport's.
@@ -220,6 +275,25 @@ function renderCaption() {
   ].filter(Boolean).join(" · ");
 }
 
+// The due page's second hand sweeps the rule in 58.5 s and waits at the end, as Hilfiker's waits
+// at 12 for the master clock's impulse, for the countdown's minute to turn over, then starts again.
+// It rests at the start when nothing is due, and for reduced motion.
+let sweep = null;
+function renderHand() {
+  const ms = data?.due_at ? Date.parse(data.due_at) - Date.now() : NaN;
+  if (!(ms > 0) || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    sweep?.cancel();
+    sweep = null;
+    return;
+  }
+  sweep ??= hand.animate([
+    { transform: "none" },
+    { transform: "translateX(100%)", offset: 58.5 / 60 },
+    { transform: "translateX(100%)" },
+  ], { duration: 60000, iterations: Infinity });
+  sweep.currentTime = 60000 - ms % 60000;
+}
+
 // Draws the value as the favicon, in the page's colours, on an opaque square so it reads on dark
 // tab strips too. A canvas, not an SVG icon, because an SVG favicon can't use the page's web font.
 function renderIcon(text) {
@@ -262,6 +336,7 @@ function render() {
     renderIcon(shown(true));
     if (isDue) renderCaption();
   } else if (error) out.textContent = "—";
+  if (isDue) renderHand();
   unitButton.textContent = fourScale ? "4.0 scale" : "Percent";
   renderUpdated();
   fit();
