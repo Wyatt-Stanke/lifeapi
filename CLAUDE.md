@@ -453,7 +453,7 @@ API access stays at `/api/docs`.
   `last_seen_at` ("Updated 2 h ago"), preceded by the error when a refresh fails.
   The tab title (`GPA - 99.150`) and favicon follow the shown value, so a background tab
   shows it: `renderIcon()` draws the digits before the point over the three after it on a
-  64px canvas (`fillText`'s `maxWidth` squeezes a row like `100`). Nothing may wait on
+  64px canvas, right-aligned in three fixed columns (` 99` over `150`). Nothing may wait on
   `requestAnimationFrame` (hidden tabs never run it); timers are throttled to about once a
   minute there, and a frozen tab refreshes on `resume`.
 - `index.html` holds all the JS in one inline script. A tiny `h(tag, attrs, ...kids)`
