@@ -18,10 +18,12 @@ from typing import Any
 
 from patchright.async_api import Error as PlaywrightError
 from patchright.async_api import Page
+from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from ... import config
 from ...models import Course, Item, ItemKind, ScrapeResult
 from ..auth.clever import launch_app
+from ..auth.google import LoginError
 from ..base import SiteUnavailable, Source, register
 from ..browser import dump_debug
 from ..cloudflare import pass_challenge
@@ -30,6 +32,16 @@ from ..dates import LOCAL_TZ, now
 M3A = "https://m3a.vhlcentral.com"
 HOME = "https://www.vhlcentral.com/home"
 MONTHS_BACK, MONTHS_AHEAD = 1, 2
+SECTION_LINK = 'a[href*="m3a.vhlcentral.com/courses/"]'
+# Signed out, vhlcentral.com/home redirects to "/", VHL's username/password login page.
+LOGIN_FORM = 'input[type="password"]'
+# TEMPORARY(vhl-signin): debugging scaffolding for the failing Clever sign-in (PR #31).
+# Remove it, with the other TEMPORARY(vhl-signin) lines, once the cause is known.
+# Messages the login page may show, e.g. why a sign-in from Clever was turned down.
+NOTICES_JS = r"""
+() => [...document.querySelectorAll('[role="alert"], .alert, .flash, .notice, .error')]
+  .map(e => e.innerText.trim().replace(/\s+/g, ' ')).filter(Boolean)
+"""
 
 # Each "My Dashboard" link on vhlcentral.com/home is an enrolled section; the card around it
 # has the program/course/teacher text.
@@ -105,7 +117,7 @@ class VistaHigherLearning(Source):
             with self.step("listing classes on the VHL home page"):
                 await app.goto(HOME)
                 await pass_challenge(app)
-                await app.wait_for_selector('a[href*="m3a.vhlcentral.com/courses/"]', timeout=config.timeout(30_000))
+                await self._signed_in(app)
                 sections = await app.evaluate(SECTIONS_JS)
             if not sections:
                 await dump_debug(app, "vhl_no_sections")
@@ -120,6 +132,25 @@ class VistaHigherLearning(Source):
             if app and app is not page:
                 await app.close()
             await page.close()
+
+    async def _signed_in(self, app: Page) -> None:
+        """Wait for the home page's class links. If Clever's sign-in didn't take, /home lands
+        on VHL's login page instead: fail as a sign-in problem rather than time out there."""
+        try:
+            await app.locator(SECTION_LINK).or_(app.locator(LOGIN_FORM)).first.wait_for(
+                timeout=config.timeout(30_000))
+        except PlaywrightTimeoutError:
+            await dump_debug(app, "vhl_home")  # TEMPORARY(vhl-signin)
+            raise
+        if await app.locator(SECTION_LINK).count():
+            return
+        await dump_debug(app, "vhl_signed_out")  # TEMPORARY(vhl-signin)
+        notices = " ".join(await app.evaluate(NOTICES_JS))  # TEMPORARY(vhl-signin)
+        raise LoginError(
+            "VHL didn't accept the sign-in from Clever: its home page sent us to the VHL login "
+            f"page ({app.url})"
+            + (f", which says: {notices}" if notices else "")  # TEMPORARY(vhl-signin)
+        )
 
     async def _section(self, app: Page, s: dict) -> tuple[Course, list[Item]]:
         m = re.search(r"/courses/([^/]+)/sections/([^/?]+)", s["href"])
