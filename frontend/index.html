@@ -84,7 +84,8 @@ const SOURCE_NAMES = {
 };
 const sourceName = (s) => SOURCE_NAMES[s] || (s || "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 const label = (s) => s ? s.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase()) : "";
-const DONE = new Set(["turned_in", "completed", "graded", "done", "returned", "handed_in"]);
+const DONE = new Set(["turned_in", "completed", "graded", "done", "returned", "handed_in",
+  "turned_in_late", "handed_in_late", "done_late"]);
 // GPAs are published to three places; JSON drops the trailing zeros (99.150 arrives as 99.15).
 const gpaText = (n) => n.toFixed(3);
 
