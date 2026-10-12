@@ -35,6 +35,8 @@ MONTHS_BACK, MONTHS_AHEAD = 1, 2
 SECTION_LINK = 'a[href*="m3a.vhlcentral.com/courses/"]'
 # Signed out, vhlcentral.com/home redirects to "/", VHL's username/password login page.
 LOGIN_FORM = 'input[type="password"]'
+# TEMPORARY(vhl-signin): debugging scaffolding for the failing Clever sign-in (PR #31).
+# Remove it, with the other TEMPORARY(vhl-signin) lines, once the cause is known.
 # Messages the login page may show, e.g. why a sign-in from Clever was turned down.
 NOTICES_JS = r"""
 () => [...document.querySelectorAll('[role="alert"], .alert, .flash, .notice, .error')]
@@ -138,15 +140,16 @@ class VistaHigherLearning(Source):
             await app.locator(SECTION_LINK).or_(app.locator(LOGIN_FORM)).first.wait_for(
                 timeout=config.timeout(30_000))
         except PlaywrightTimeoutError:
-            await dump_debug(app, "vhl_home")
+            await dump_debug(app, "vhl_home")  # TEMPORARY(vhl-signin)
             raise
         if await app.locator(SECTION_LINK).count():
             return
-        await dump_debug(app, "vhl_signed_out")
-        notices = " ".join(await app.evaluate(NOTICES_JS))
+        await dump_debug(app, "vhl_signed_out")  # TEMPORARY(vhl-signin)
+        notices = " ".join(await app.evaluate(NOTICES_JS))  # TEMPORARY(vhl-signin)
         raise LoginError(
             "VHL didn't accept the sign-in from Clever: its home page sent us to the VHL login "
-            f"page ({app.url})" + (f", which says: {notices}" if notices else "")
+            f"page ({app.url})"
+            + (f", which says: {notices}" if notices else "")  # TEMPORARY(vhl-signin)
         )
 
     async def _section(self, app: Page, s: dict) -> tuple[Course, list[Item]]:

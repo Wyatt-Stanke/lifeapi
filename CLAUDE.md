@@ -152,9 +152,11 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   `pass_challenge` after every navigation. The first call matters most: Cloudflare can
   challenge Clever's sign-in callback, and navigating away before it clears throws away
   the one-time `?code=`. If Clever's sign-in doesn't take, `/home` redirects to `/`, VHL's
-  username/password login page, and `_signed_in` raises `LoginError` (snapshot
-  `vhl_signed_out`) instead of waiting out the class links. A VHL session outlives the
-  sign-in that made it (about 24 h), so a broken Clever sign-in only shows once it expires.
+  username/password login page, and `_signed_in` raises `LoginError` instead of waiting out
+  the class links. A VHL session outlives the sign-in that made it (about 24 h), so a broken
+  Clever sign-in only shows once it expires. Lines marked `TEMPORARY(vhl-signin)` (snapshots
+  `vhl_home`/`vhl_signed_out`, the login page's notices in the error) are debugging
+  scaffolding for that failure: remove them once its cause is known.
 - **Google Classroom**: DOM only. The extractors are JS strings in
   `sources/google_classroom_js.py`. CSS class names are minified and change between
   releases, so match on `data-*` attributes, ARIA labels and text patterns. Pitfalls that
