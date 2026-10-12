@@ -124,7 +124,7 @@ class Item(BaseModel):
                     "`completed`, `partial`, `partial_late`, `missing` (vhl). Null for "
                     "announcements, materials and anything without a state. Statuses that "
                     "count as finished: `turned_in`, `completed`, `graded`, `done`, `returned`, "
-                    "`handed_in`.",
+                    "`handed_in`, `turned_in_late`, `handed_in_late`, `done_late`.",
         examples=["assigned"],
     )
     points_possible: float | None = Field(None, description="Maximum score, if graded.")
@@ -175,7 +175,9 @@ class GradeEntry(BaseModel):
 GPA_PLACES = 3
 
 # Statuses that mean the student is finished with an item. The explorer's `DONE` mirrors this.
-DONE_STATUSES = ("turned_in", "completed", "graded", "done", "returned", "handed_in")
+# Classroom adds "late" to work turned in after the deadline ("Turned in late").
+DONE_STATUSES = ("turned_in", "completed", "graded", "done", "returned", "handed_in",
+                 "turned_in_late", "handed_in_late", "done_late")
 
 
 class Grade(BaseModel):
