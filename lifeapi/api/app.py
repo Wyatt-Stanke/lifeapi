@@ -37,8 +37,8 @@ from . import commands, drafts
 from .schemas import (
     DESCRIPTION, DONE_STATUSES, TAGS, Action, AssignmentEdit, Browser, BrowserSettings,
     ClearedSyncRequests, CommandRequest, CommandResult, ConversionDraft, CountValue, Course,
-    DebugSnapshot, DueSettings, DueValue, Error, GpaValue, Grade, Health, HistoryRecord, Item, NewAssignment, NoteSettings,
-    RecentComment, Run, RunDetail, Schedule, ScheduleSettings, SourceStatus, StatusSettings, StatusValue,
+    DayValue, DebugSnapshot, DueSettings, DueValue, Error, GpaValue, Grade, Health, HistoryRecord, Item, NewAssignment, NoteSettings,
+    RecentComment, Run, RunDetail, Schedule, ScheduleDay, ScheduleSettings, SourceStatus, StatusSettings, StatusValue,
     SyncRequest, errors,
 )
 
@@ -869,7 +869,66 @@ def history(
     return [{**dict(r), "value": json.loads(r["value"])} for r in conn.execute(sql, args)]
 
 
-# Single values for widgets and displays: each is served at /min/<name> as a bare number in
+def _school_today() -> date:
+    return datetime.now(LOCAL_TZ).date()
+
+
+@app.get("/schedule", dependencies=[Auth], tags=["schedule"], operation_id="listScheduleDays",
+         summary="List school days' class schedules", responses=READ_ERRORS)
+def schedule(
+    start: date | None = Query(None, description="The first day to cover, `YYYY-MM-DD`. Default: "
+                                                 "today, in the school's time zone.",
+                               examples=["2026-10-15"]),
+    days: int = Query(7, ge=1, le=400, description="How many days to cover, from `start`. Days "
+                                                   "without school have no record, so a week "
+                                                   "usually lists five."),
+    source: str | None = _source_param(),
+    include_inactive: bool = INCLUDE_INACTIVE,
+    conn: sqlite3.Connection = Depends(db),
+) -> list[ScheduleDay]:
+    """The school days from `start` through `days` days later, in date order, each with its day
+    of the rotation (`day`) and its classes (`periods`). The scraper reads the whole school
+    year's calendar, so this works for any day of it. To find the next school day, list a week
+    from today and take the first."""
+    start = start or _school_today()
+    sql = "SELECT * FROM schedule_days WHERE date>=? AND date<?"
+    args: list[Any] = [start.isoformat(), (start + timedelta(days=days)).isoformat()]
+    if source:
+        sql += " AND source=?"
+        args.append(source)
+    if not include_inactive:
+        sql += " AND active=1"
+    sql += " ORDER BY date, source"
+    return [storage.row_to_dict(r) for r in conn.execute(sql, args)]
+
+
+@app.get("/schedule/{day}", dependencies=[Auth], tags=["schedule"], operation_id="getScheduleDay",
+         summary="One day's class schedule", responses=errors(401, 404, 503))
+def schedule_day(
+    day: str = Path(pattern=r"^(today|tomorrow|\d{4}-\d{2}-\d{2})$",
+                    description="`today`, `tomorrow` (in the school's time zone) or a date, "
+                                "`YYYY-MM-DD`.", examples=["today"]),
+    conn: sqlite3.Connection = Depends(db),
+) -> ScheduleDay:
+    """One school day's classes in order, with times, teacher and room, and which day of the
+    rotation it is (`day`): `today` is what Infinite Campus's home page shows as "Today's
+    Schedule", with its "Day: 1" badge. 404 when there's no school that day (a weekend, a
+    holiday, or outside the school year); `GET /schedule` finds the next school day."""
+    if day in ("today", "tomorrow"):
+        on = _school_today() + timedelta(days=1 if day == "tomorrow" else 0)
+    else:
+        try:
+            on = date.fromisoformat(day)
+        except ValueError:
+            raise HTTPException(422, f"{day} isn't a date") from None
+    row = conn.execute("SELECT * FROM schedule_days WHERE date=? AND active=1 ORDER BY source LIMIT 1",
+                       (on.isoformat(),)).fetchone()
+    if row is None:
+        raise HTTPException(404, f"No school on {on:%A, %B} {on.day}, {on.year}")
+    return storage.row_to_dict(row)
+
+
+# Single values for widgets and displays: each is served at /min/<name> as a bare value in
 # text/plain and at /json/<name> as a small JSON object. Neither needs a token. Bodies are
 # written by hand so the GPA keeps its trailing zeros (99.150 would serialize as 99.15). A value
 # that can be absent (`due`, when nothing is) is an empty /min body and null in the JSON.
@@ -877,14 +936,17 @@ def history(
 MIN_RESPONSES = {200: {"content": {"text/plain": {"schema": {"type": "string"}}}}}
 
 
-def _value(name: str, summary: str, doc: str, model: type, responses: dict | None = None):
-    """Register `fn(conn, **query params) -> (number as text or None, extra JSON fields)` as
+def _value(name: str, summary: str, doc: str, model: type, responses: dict | None = None,
+           string: bool = False):
+    """Register `fn(conn, **query params) -> (value as text or None, extra JSON fields)` as
     GET /min/<name> and GET /json/<name>. Both take `fn`'s parameters (its `conn` defaults to
-    `Depends(db)`, the rest to `Query(...)`), so FastAPI parses them the same way."""
+    `Depends(db)`, the rest to `Query(...)`), so FastAPI parses them the same way. The value is
+    a number, written into the JSON as it is, unless `string`."""
     op = name.title()
     responses = {**(responses or {}), **errors(503)}
-    min_doc = f"{doc}\n\nThe number alone, as plain text. `GET /json/{name}` has it as JSON."
-    json_doc = f"{doc}\n\nAs JSON. `GET /min/{name}` has the number alone, as plain text."
+    what = "value" if string else "number"
+    min_doc = f"{doc}\n\nThe {what} alone, as plain text. `GET /json/{name}` has it as JSON."
+    json_doc = f"{doc}\n\nAs JSON. `GET /min/{name}` has the {what} alone, as plain text."
 
     def register(fn):
         def as_text(**kwargs: Any) -> Response:
@@ -894,7 +956,7 @@ def _value(name: str, summary: str, doc: str, model: type, responses: dict | Non
         def as_json(**kwargs: Any) -> Response:
             text, fields = fn(**kwargs)
             rest = "".join(f", {json.dumps(k)}: {json.dumps(v)}" for k, v in fields.items())
-            value = "null" if text is None else text
+            value = "null" if text is None else json.dumps(text) if string else text
             return Response(f'{{"value": {value}{rest}}}', media_type="application/json")
 
         for route in (as_text, as_json):
@@ -927,7 +989,7 @@ def _updated_at(conn: sqlite3.Connection, sources: list[str]) -> str | None:
 
 def _item_sources(conn: sqlite3.Connection) -> list[str]:
     """The enabled sources that have stored items: the ones item values are worked out from
-    (Infinite Campus has only grades)."""
+    (Infinite Campus has none)."""
     stored = {row[0] for row in conn.execute("SELECT DISTINCT source FROM items")}
     return [name for name, cls in REGISTRY.items() if cls.enabled and name in stored]
 
@@ -1020,6 +1082,26 @@ def _status(conn: sqlite3.Connection = Depends(db)) -> tuple[str, dict]:
         age = datetime.now(timezone.utc) - datetime.fromisoformat(updated_at)
         minutes = int(age.total_seconds() // 60)
     return str(failing), {"minutes": minutes, "updated_at": updated_at}
+
+
+@_value("day", "Today's day of the rotation", model=DayValue, string=True,
+        doc="Which day of the school's rotation today is, as Infinite Campus's home page shows "
+            "it on \"Today's Schedule\" (its \"Day: 1\" is `1`): the day that decides which "
+            "classes meet, and when. A string. Empty, or null in the JSON, when there's no school "
+            "today. The JSON adds `date` (today), `term`, and the next school day after today "
+            "(`next_date`, `next_day`). `GET /schedule/today` has today's classes.")
+def _day(conn: sqlite3.Connection = Depends(db)) -> tuple[str | None, dict]:
+    today = _school_today().isoformat()
+
+    def first(op: str) -> dict[str, Any]:
+        row = conn.execute(f"SELECT data FROM schedule_days WHERE active=1 AND date{op}? "
+                           "ORDER BY date, source LIMIT 1", (today,)).fetchone()
+        return json.loads(row["data"]) if row else {}
+
+    now, after = first("="), first(">")
+    sources = [row[0] for row in conn.execute("SELECT DISTINCT source FROM schedule_days")]
+    return now.get("day"), {"date": today, "term": now.get("term"), "next_date": after.get("date"),
+                            "next_day": after.get("day"), "updated_at": _updated_at(conn, sources)}
 
 
 # Turning announcements into assignments. Assignments made here are items like any other

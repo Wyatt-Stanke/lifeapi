@@ -1,25 +1,30 @@
-"""Infinite Campus (grades only), signed in through Google SSO.
+"""Infinite Campus (grades and the class schedule), signed in through Google SSO.
 
 After the browser signs in, the portal's own JSON endpoints are called with the session:
   /campus/resources/portal/grades                    -> courses x terms x grading tasks
   /campus/resources/portal/grades/detail/<section>   -> categories + assignment scores
   /campus/api/campus/grading/gpas/my/gpa             -> overall GPAs (cumulative, maybe term)
+  /campus/resources/portal/roster                    -> each section's periods, per term and
+                                                        period schedule (rotation day)
+  /campus/resources/calendar/instructionalDay        -> each school day's period schedule
 
-The `gpa` partial fetch calls only the last one.
+The `gpa` partial fetch calls only the GPA one.
 """
 
 from __future__ import annotations
 
+from datetime import date, datetime, time
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
 from patchright.async_api import Page
 
 from ... import config
-from ...models import GPA_PLACES, Course, Grade, GradeEntry, ScrapeResult
+from ...models import GPA_PLACES, Course, Grade, GradeEntry, ScheduleDay, SchedulePeriod, ScrapeResult
 from ..auth.google import LoginError, google_login, is_google_login_url, on_google_login
 from ..base import SiteUnavailable, Source, register
 from ..browser import dump_debug
+from ..dates import LOCAL_TZ
 
 
 def _num(v: Any) -> float | None:
@@ -39,6 +44,17 @@ def _clean(s: Any) -> str | None:
     return " ".join(str(s).split()) or None if s is not None else None
 
 
+def _within(day: date, start: str | None, end: str | None) -> bool:
+    """Whether `day` is in a range of ISO dates where either end may be open."""
+    return (not start or date.fromisoformat(start[:10]) <= day) and (
+        not end or day <= date.fromisoformat(end[:10]))
+
+
+def _join(*names: str | None) -> str | None:
+    """Distinct names, in order, for a day two enrollments describe differently."""
+    return " / ".join(dict.fromkeys(n for n in names if n)) or None
+
+
 @register
 class InfiniteCampus(Source):
     name = "infinite_campus"
@@ -56,6 +72,8 @@ class InfiniteCampus(Source):
             if self.partial != "gpa":
                 enrollments = await self._get(page, "/campus/resources/portal/grades")
                 result = await self._parse(page, enrollments)
+                with self.step("reading the schedule"):
+                    result.schedule = await self._schedule(page)
             gpas = await self._get(page, "/campus/api/campus/grading/gpas/my/gpa")
             result.grades += [g for g in map(self._gpa, gpas) if g.gpa is not None]
             return result
@@ -155,6 +173,66 @@ class InfiniteCampus(Source):
 
         result.courses = list(courses.values())
         return result
+
+    async def _schedule(self, page: Page) -> list[ScheduleDay]:
+        """Every school day's classes, as the home page's "Today's Schedule" shows them for
+        one day. The roster has each section's placements: a period on one period schedule in
+        one term. A period schedule is a day of the rotation (named "1", shown as "Day: 1"),
+        and the calendar says which one each school day follows. Fetching the roster for a
+        `_date` marks that day's placements `instructionalDay` the same way, one day per call."""
+        roster = await self._get(page, "/campus/resources/portal/roster"
+                                       "?_expand=%7BsectionPlacements-%7Bterm%7D%7D&_crossSite=true")
+        days: dict[str, ScheduleDay] = {}
+        for structure in dict.fromkeys(r["structureID"] for r in roster):  # one per enrollment
+            calendar = await self._get(page, f"/campus/resources/calendar/instructionalDay"
+                                             f"?structureID={structure}")
+            placements = [(r, p) for r in roster if r["structureID"] == structure
+                          for p in r.get("sectionPlacements") or []]
+            names = {p["periodScheduleID"]: _clean(p.get("periodScheduleName")) for _, p in placements}
+            terms = {p["termID"]: p["term"] for _, p in placements if p.get("term")}
+            for d in calendar:
+                if d.get("isSchoolDay") is False:
+                    continue
+                on = date.fromisoformat(d["date"])
+                term = next((t for t in sorted(terms.values(), key=lambda t: not t.get("isPrimary"))
+                             if _within(on, t.get("startDate"), t.get("endDate"))), {})
+                meets: dict[tuple, tuple[dict, dict]] = {}
+                for r, p in placements:
+                    t = p.get("term") or {}
+                    if (p["periodScheduleID"] == d["periodScheduleID"]
+                            and _within(on, p.get("startDate") or t.get("startDate"),
+                                        p.get("endDate") or t.get("endDate"))
+                            and _within(on, r.get("startDate"), r.get("endDate"))):  # not dropped
+                        meets.setdefault((r["sectionID"], p.get("periodID")), (r, p))
+                day = days.setdefault(d["date"], ScheduleDay(
+                    source=self.name, id=d["date"], date=on, url=self._url("schedule"),
+                    extra={k: v for k, v in {
+                        "school": _clean(next((r.get("schoolName") for r, _ in placements), None)),
+                        "term_id": term.get("termID"),
+                        "period_schedule_id": d["periodScheduleID"],
+                        "structure_id": structure,
+                    }.items() if v is not None},
+                ))
+                day.day = _join(day.day, names.get(d["periodScheduleID"]))
+                day.term = _join(day.term, _clean(term.get("termName")))
+                day.periods += [self._period(on, r, p) for r, p in meets.values()]
+        for day in days.values():
+            day.periods.sort(key=lambda p: (p.starts_at, p.name))
+        return list(days.values())
+
+    def _period(self, on: date, section: dict, p: dict) -> SchedulePeriod:
+        def at(hms: str) -> datetime:  # e.g. "08:35:00", the school's local time
+            return datetime.combine(on, time.fromisoformat(hms), LOCAL_TZ)
+
+        return SchedulePeriod(
+            name=_clean(p.get("periodName")) or str(p.get("periodSequence")),
+            starts_at=at(p["startTime"]),
+            ends_at=at(p["endTime"]),
+            course_id=str(section["sectionID"]),
+            course_name=p.get("courseName") or section["courseName"],
+            teacher=_clean(p.get("teacherDisplay") or section.get("teacherDisplay")),
+            room=_clean(p.get("roomName") or section.get("roomName")),
+        )
 
     def _gpa(self, g: dict) -> Grade:
         # e.g. {"calendarID": 6779, "type": "Cumulative", "termName": null, "gpa": "99.150",

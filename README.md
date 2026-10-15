@@ -21,7 +21,7 @@ The project has two halves that run separately:
 | Google Classroom | `google_classroom` | Google | Assignments, questions, quizzes and materials (from Classwork), plus announcements (from Stream). Includes description, due date, points, score, status, grading category, topic, attachments, links, submitted work, and class and private comments. |
 | AP Classroom | `ap_classroom` | College Board | AP Daily videos (watch %) and assessments (progress, score/max, timer, results link) for every AP subject. |
 | Vista Higher Learning | `vhl` | Google via Clever | Assignment groups by due date, with activities completed/assigned, status, estimated time and launch link. |
-| Infinite Campus | `infinite_campus` | Google SSO | Grades only: each course's grade for every term and grading task, category breakdown, and every graded assignment with its score, flags (missing, late, …) and link. |
+| Infinite Campus | `infinite_campus` | Google SSO | Grades: each course's grade for every term and grading task, category breakdown, and every graded assignment with its score, flags (missing, late, …) and link. The class schedule: "Today's Schedule" from the home page, for every school day of the year, with its "Day: 1" rotation day and each period's class, times, teacher and room. |
 | Albert | `albert` | Google | Stub, disabled until Albert has assignments. |
 
 Every record carries a `url` that deep-links back to the original page.
@@ -277,8 +277,10 @@ All list endpoints return only items still present at the source, unless you pas
 | `POST /extra/commands/{action_id}/undo` | Undo one, however old (undoing an undo redoes it). |
 | `GET /courses` | Classes per source. |
 | `GET /grades` | Infinite Campus grades. Filters: `source`, `term`. |
+| `GET /schedule?days=7` | Class schedules for the school days from `start` (default today), each with its rotation `day` (Infinite Campus's "Day: 1" is `1`), `term` and `periods` (class, times, teacher, room). Weekends and holidays aren't listed. |
+| `GET /schedule/{day}` | One school day's schedule: `today`, `tomorrow` or `YYYY-MM-DD`. 404 when there's no school. |
 | `GET /history` | Every change to grades, GPAs, category totals, assignment scores and item statuses/scores, newest first, kept for good. Filters: `source`, `kind` (`grade`, `entry`, `item`), `id` (a grade's id includes its assignments), `gpa=true`, `since`, `limit`. |
-| `GET /min/{name}`, `GET /json/{name}` | One number, as plain text (`/min`) or JSON `{"value": …}` (`/json`). Needs no token. `name` is `gpa` (cumulative weighted GPA, a percentage always written to three decimal places, e.g. `99.150`, that weighting can lift above 100; the JSON adds `last_seen_at`), `missing` (items from `/items/missing` due in the last `?days=`, default 7), `next` (unfinished items due in the next `?days=`, default 7), `due` (minutes until the soonest of those; the JSON adds its `due_at`, `title` and `course_name`, and the value is empty, or null, when nothing is due) or `status` (enabled sources whose last run failed; the JSON adds `minutes`, the age of the stalest source's last successful full run). Every JSON but `gpa`'s adds `updated_at`: when the stalest source it's worked out from (for items, the enabled sources with items) last finished a successful full run. |
+| `GET /min/{name}`, `GET /json/{name}` | One value, as plain text (`/min`) or JSON `{"value": …}` (`/json`). Needs no token. `name` is `gpa` (cumulative weighted GPA, a percentage always written to three decimal places, e.g. `99.150`, that weighting can lift above 100; the JSON adds `last_seen_at`), `day` (today's rotation day, e.g. `1`, a string in the JSON; empty, or null, when there's no school; the JSON adds `date`, `term`, and the next school day's `next_date` and `next_day`), `missing` (items from `/items/missing` due in the last `?days=`, default 7), `next` (unfinished items due in the next `?days=`, default 7), `due` (minutes until the soonest of those; the JSON adds its `due_at`, `title` and `course_name`, and the value is empty, or null, when nothing is due) or `status` (enabled sources whose last run failed; the JSON adds `minutes`, the age of the stalest source's last successful full run). Every JSON but `gpa`'s adds `updated_at`: when the stalest source it's worked out from (for items, the enabled sources with items) last finished a successful full run. |
 | `GET /sources` | Every source, whether it's enabled, its partial fetches, its schedule and next fetch, and its last run (`null` if never): when it ran, whether it was partial, whether it succeeded, the error, and counts. |
 | `PUT /sources/{source}/schedule` | Set how often a source is fetched: JSON `{"interval_minutes": 30}`, optionally with `"partial"` and `"full_every"`. See [Schedules](#schedules-and-partial-fetches). |
 | `DELETE /sources/{source}/schedule` | Back to the default schedule. |
@@ -418,9 +420,11 @@ JSON instead of the DOM. It's far more stable.
 - **AP Classroom** video links use AP Daily's `apclassroom.collegeboard.org/d/<code>`
   short-link format. Assessments that are still open link to the subject's assignment
   list, because AP Classroom has no stable per-assessment URL before you start one.
-- **Infinite Campus**: as requested, only grades are collected (not IC's assignment list
-  or attendance).
-- **Retention.** Courses, items and grades are never deleted, only marked inactive, but each
+- **Infinite Campus**: as requested, only grades and the class schedule are collected (not
+  IC's assignment list or attendance). The schedule lists only periods with a class, as IC's
+  home page does (no lunch or free periods), and doesn't include day events such as early
+  dismissals: none were on the calendar to build against.
+- **Retention.** Courses, items, grades and school days are never deleted, only marked inactive, but each
   holds only its latest values. Every change to a grade-related value (grade letters and
   percents, GPAs, category totals, assignment scores, item statuses and scores) is also kept in
   `history` (`GET /history`) for good, which costs a few KB a week. Scrape runs and finished sync
