@@ -9,6 +9,7 @@ reading the API, not the scraper.
 
 from __future__ import annotations
 
+from datetime import date as Date  # aliased: ScheduleDay has a field named `date`
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -224,7 +225,57 @@ class Grade(BaseModel):
     )
 
 
+class SchedulePeriod(BaseModel):
+    """One class meeting in a school day's schedule."""
+
+    name: str = Field(description="The period, as the source names it.", examples=["1"])
+    starts_at: datetime = Field(description="When it starts, ISO 8601 with UTC offset (the "
+                                            "school's local time).",
+                                examples=["2026-10-15T08:35:00-04:00"])
+    ends_at: datetime = Field(description="When it ends, ISO 8601 with UTC offset (the school's "
+                                          "local time).",
+                              examples=["2026-10-15T09:35:00-04:00"])
+    course_id: str | None = Field(None, description="`id` of the course (in the same `source`) "
+                                                    "that meets.", examples=["781043"])
+    course_name: str = Field(description="Course name, copied here for convenience.",
+                             examples=["AP PreCalculus"])
+    teacher: str | None = Field(None, description="Teacher's display name.")
+    room: str | None = Field(None, description="Room, as the source names it.", examples=["212"])
+
+
+class ScheduleDay(BaseModel):
+    """One school day's class schedule: Infinite Campus's "Today's Schedule", for every school
+    day of the year. Days without school have no record."""
+
+    source: str = Field(description="Source that this record came from.", examples=["infinite_campus"])
+    id: str = Field(description="The date, `YYYY-MM-DD`. Unique only within `source`.",
+                    examples=["2026-10-15"])
+    date: Date = Field(description="The school day, in the school's time zone.",
+                       examples=["2026-10-15"])
+    day: str | None = Field(
+        None,
+        description="Which day of the school's rotation it is, as the source names it: the "
+                    "day that decides which classes meet, and when. Infinite Campus shows `1` "
+                    "as \"Day: 1\" (a name that already starts with \"Day\" as it is). Null if "
+                    "the source doesn't say.",
+        examples=["1"],
+    )
+    term: str | None = Field(None, description="The term the day is in.", examples=["MP1"])
+    periods: list[SchedulePeriod] = Field(
+        default_factory=list,
+        description="The classes that meet that day, in order. Only periods with a class are "
+                    "listed: lunch and free periods aren't.",
+    )
+    url: str | None = Field(None, description="Link to the schedule on the source.")
+    extra: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Source-specific fields. `infinite_campus`: `school`, `term_id`, "
+                    "`period_schedule_id` (Infinite Campus's id for `day`), `structure_id`.",
+    )
+
+
 class ScrapeResult(BaseModel):
     courses: list[Course] = Field(default_factory=list)
     items: list[Item] = Field(default_factory=list)
     grades: list[Grade] = Field(default_factory=list)
+    schedule: list[ScheduleDay] = Field(default_factory=list)

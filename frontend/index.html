@@ -16,6 +16,7 @@
     <a href="#/comments">Comments</a> |
     <a href="#/courses">Courses</a> |
     <a href="#/grades">Grades</a> |
+    <a href="#/schedule">Schedule</a> |
     <a href="#/search">Search</a> |
     <a href="#/status">Sync status</a>
   </nav>
@@ -197,16 +198,24 @@ async function convertedMap() {
 // ---------- views ----------
 
 async function viewToday() {
-  const [upcoming, missing, ann, converted] = await Promise.all([
+  const [upcoming, missing, ann, converted, schoolDays] = await Promise.all([
     api("/items/upcoming", { days: 7 }), api("/items/missing"), api("/announcements", { days: 3 }), convertedMap(),
+    api("/schedule", { days: 14 }).catch(() => []),
   ]);
   const recentMissing = missing.filter((it) => new Date(it.due_at) > new Date(Date.now() - 14 * 86400000));
+  const today = schoolDays.find((d) => d.date === isoDate(new Date()));
+  const next = schoolDays.find((d) => d.date > isoDate(new Date()));
   return [
-    h("h1", {}, new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })),
+    h("h1", {}, new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }),
+      today?.day ? ` · ${rotationDay(today.day)}` : null),
     h("p", {},
       h("a", { href: "#/upcoming" }, `${upcoming.length} due this week`), " · ",
       h("a", { href: "#/missing" }, `${missing.length} missing`), ` (${recentMissing.length} from the last 2 weeks)`, " · ",
       h("a", { href: "#/announcements" }, `${ann.length} announcements in 3 days`)),
+    h("h2", {}, "Today's schedule"),
+    today ? [h("p", {}, schoolDayText(today)), classTable(today)]
+      : h("p", {}, "No school today.", next ? [" Next: ", h("a", { href: "#/schedule?start=" + next.date },
+        dayKey(fromIsoDate(next.date))), next.day ? ` (${rotationDay(next.day)})` : null, "."] : null),
     h("h2", {}, "Due this week"),
     ...byDay(upcoming),
     h("h2", {}, "Recently missed"),
@@ -222,6 +231,40 @@ function byDay(items) {
   return [...groupBy(items, (it) => dayKey(new Date(it.due_at)))].flatMap(([day, list]) => [
     h("h3", {}, day), h("ul", {}, list.map((it) => itemLine(it, { showDue: false }))),
   ]);
+}
+
+// Class schedules (GET /schedule): one record per school day, `date` as YYYY-MM-DD.
+const isoDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const fromIsoDate = (s) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+// Infinite Campus shows day "1" as "Day: 1", and a name already starting with "day" as it is.
+const rotationDay = (name) => /^day/i.test(name) ? name : `Day ${name}`;
+
+const schoolDayText = (d) => [[d.day ? rotationDay(d.day) : null, d.term, sourceName(d.source)].filter(Boolean).join(" · "),
+  ...(d.url ? [" · ", h("a", { href: d.url, target: "_blank" }, `open in ${sourceName(d.source)}`)] : [])];
+
+function classTable(d) {
+  if (!d.periods.length) return h("p", {}, h("em", {}, "No classes."));
+  const now = new Date();
+  return h("table", { border: 1, cellpadding: 4 },
+    h("tr", {}, ["Period", "Time", "Class", "Teacher", "Room"].map((x) => h("th", {}, x))),
+    d.periods.map((p) => h("tr", {},
+      h("td", {}, new Date(p.starts_at) <= now && now < new Date(p.ends_at) ? h("strong", { title: "Now" }, `▶ ${p.name}`) : p.name),
+      h("td", {}, `${time(new Date(p.starts_at))} – ${time(new Date(p.ends_at))}`),
+      h("td", {}, p.course_id ? h("a", { href: courseHref(d.source, p.course_id) }, p.course_name) : p.course_name),
+      h("td", {}, p.teacher || ""), h("td", {}, p.room || ""))));
+}
+
+async function viewSchedule(params) {
+  const start = params.get("start") || isoDate(new Date());
+  const days = await api("/schedule", { start, days: 7 });
+  const week = (n) => { const d = fromIsoDate(start); d.setDate(d.getDate() + n); return "#/schedule?start=" + isoDate(d); };
+  return [
+    h("h1", {}, "Schedule"),
+    h("p", {}, h("a", { href: week(-7) }, "← Previous 7 days"), " · ", h("a", { href: "#/schedule" }, "From today"), " · ",
+      h("a", { href: week(7) }, "Next 7 days →")),
+    days.length ? days.map((d) => [h("h2", {}, dayKey(fromIsoDate(d.date))), h("p", {}, schoolDayText(d)), classTable(d)])
+      : h("p", {}, h("em", {}, `No school in the 7 days from ${dayKey(fromIsoDate(start))}.`)),
+  ];
 }
 
 async function viewUpcoming(params) {
@@ -1121,6 +1164,7 @@ const routes = [
   [/^\/item\/([^/]+)\/([^/]+)$/, viewItem],
   [/^\/grades$/, viewGrades],
   [/^\/grade\/([^/]+)\/([^/]+)$/, viewGrade],
+  [/^\/schedule$/, viewSchedule],
   [/^\/search$/, viewSearch],
   [/^\/status$/, viewStatus],
   [/^\/open$/, viewOpen],

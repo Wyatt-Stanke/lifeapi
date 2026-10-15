@@ -143,8 +143,18 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
 - **Infinite Campus**: after SSO, calls `/campus/resources/portal/grades` and
   `/grades/detail/<sectionID>` with `page.request`, plus `/campus/api/campus/grading/gpas/my/gpa`
   for overall GPAs (this district shows only a weighted cumulative GPA, as a percentage that weighting can push past 100). The session cookie doesn't persist
-  across browser launches, so it signs in every run. Grades only, by request. Its `gpa`
-  partial fetch signs in and calls only the GPA endpoint.
+  across browser launches, so it signs in every run. Grades and the class schedule, no
+  assignments or attendance. Its `gpa` partial fetch signs in and calls only the GPA endpoint.
+  The schedule (`_schedule`) is the home page's "Today's Schedule" for every school day of
+  the year, from two calls: `/campus/resources/portal/roster?_crossSite=true` (each section's
+  placements: a period on one period schedule in one term) and, per enrollment's
+  `structureID`, `/campus/resources/calendar/instructionalDay` (each school day's
+  `periodScheduleID`). A period schedule is a day of the rotation: its `periodScheduleName`
+  `1` is the home page's "Day: 1" badge (the portal prefixes "Day: " unless the name starts
+  with "day"). A day's classes are the placements on its period schedule whose term and
+  section dates include it. The portal itself asks for one day at a time
+  (`roster?_date=YYYY-MM-DD`, which marks that day's placements `instructionalDay`); the
+  two-call version matched it on every date checked, across all four terms.
 - **VHL**: in-page `fetch` of `study_schedule/event_calendar/YYYY-MM` (HTML fragments
   listing the due dates) and `assignments_by_due_date?due_date=` (JSON). Never open
   activity URLs: that starts the activity. vhlcentral.com is behind Cloudflare, which
@@ -198,7 +208,8 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
 
 ### Storage and API
 
-- `storage.py`: tables `courses`, `items`, `grades` and `scrape_runs`, plus `sync_requests`,
+- `storage.py`: tables `courses`, `items`, `grades`, `schedule_days` (class schedules, one
+  row per school day; not `schedules`, which is fetch schedules) and `scrape_runs`, plus `sync_requests`,
   `schedules`, `browser_settings`, `history`, and the API-written `item_marks` and
   `custom_items` and `actions` (see "The student's additions"). Each record row stores the full model JSON in `data`, plus a few indexed
   columns used by API filters. `save_result` upserts and then, for a full run, marks rows
@@ -224,10 +235,11 @@ Prefer the platform's own JSON over the DOM wherever the frontend loads it:
   `/sources/{source}/browser`, `/items/{source}/{item_id}/note` and `/due`,
   `/extra/assignments` and `/extra/commands`. The
   optional `LIFEAPI_API_TOKEN` auth (bearer header or `?token=` query param) applies to
-  everything except `/health` and the single-value endpoints `/min/<name>` (plain-text number)
-  and `/json/<name>` (`{"value": …}`), for `gpa`, `missing`, `next`, `due` and `status`.
+  everything except `/health` and the single-value endpoints `/min/<name>` (plain-text value)
+  and `/json/<name>` (`{"value": …}`), for `gpa`, `day`, `missing`, `next`, `due` and `status`.
   Those are public so the `/big/<name>` pages and widgets work on any device; `_value()` registers both
-  forms from one function, copying its signature so query params (`?days=`) work on both. Every list endpoint hides inactive rows unless
+  forms from one function, copying its signature so query params (`?days=`) work on both, and
+  writes the JSON `value` as it is (a number) unless `string=True` (`day`). Every list endpoint hides inactive rows unless
   `include_inactive=true`. The API imports the scraper's `REGISTRY` (to validate sync
   requests and schedules, and list never-run sources and their partials in `/sources`), but
   never opens a browser.
@@ -429,8 +441,8 @@ restores the default. The explorer edits it in the Sync status page's Browser co
 ### Frontend (`frontend/`)
 
 A temporary, deliberately unstyled explorer: plain semantic HTML, no CSS, no build step.
-It's a user-facing wrapper (Today, Upcoming, Missing, Announcements, Comments, Courses, Grades,
-Search, Sync status with sync buttons and schedule and browser editors; item pages with a
+It's a user-facing wrapper (Today, with today's classes, Upcoming, Missing, Announcements, Comments,
+Courses, Grades, Schedule, Search, Sync status with sync buttons and schedule and browser editors; item pages with a
 ✎ button beside each editable field (due date, status, note, and a custom item's title, kind,
 points and description) that opens a small form under it (`editable()`, `editors()`); "Convert
 to assignment" on announcements, a form filled from `/extra/drafts`), not an endpoint browser.
@@ -527,7 +539,9 @@ API access stays at `/api/docs`.
   pages get `posted_time` from `detail_fetched_at` on merge, and announcements re-read them.
 - Infinite Campus produces `Grade` records (one per course × term × grading task), each
   with `GradeEntry` assignment scores, plus one course-less `Grade` per overall GPA
-  (`gpa` set, id `gpa:<calendarID>:<type>:<termSeq>:<w|uw>`). It produces no `Item`s.
+  (`gpa` set, id `gpa:<calendarID>:<type>:<termSeq>:<w|uw>`), and one `ScheduleDay` per
+  school day (id the date, `day` the rotation day, `periods` its classes in order, with
+  `course_id` the section). It produces no `Item`s.
 - GPAs are published to three decimal places (`models.GPA_PLACES`). Stored as floats, they
   lose trailing zeros (`99.150` is stored as `99.15`), so anything that turns a GPA into text
   pads it to three places: `/min/gpa` and `/json/gpa` write their bodies by hand, `/big/gpa` and the explorer's

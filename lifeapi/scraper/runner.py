@@ -255,6 +255,7 @@ async def _run_one(conn, ctx, cls: type[Source], partial: str | None = None) -> 
             return error
     storage.save_result(conn, cls.name, result, partial=partial is not None)
     storage.finish_run(conn, run_id, result)
-    log.info("%s: %d courses, %d items, %d grades",
-             cls.name, len(result.courses), len(result.items), len(result.grades))
+    log.info("%s: %d courses, %d items, %d grades%s",
+             cls.name, len(result.courses), len(result.items), len(result.grades),
+             f", {len(result.schedule)} school days" if result.schedule else "")
     return None

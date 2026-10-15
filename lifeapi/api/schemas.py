@@ -4,6 +4,7 @@ handed to a person or an agent on its own, so it explains the data, not just the
 from __future__ import annotations
 
 from datetime import date, datetime
+from datetime import date as Date  # for fields named `date`
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, Field
@@ -96,6 +97,10 @@ class Item(models.Item, Tracked):
 
 class Grade(models.Grade, Tracked):
     __doc__ = models.Grade.__doc__
+
+
+class ScheduleDay(models.ScheduleDay, Tracked):
+    __doc__ = models.ScheduleDay.__doc__
 
 
 class RecentComment(models.Comment):
@@ -346,6 +351,23 @@ class StatusValue(BaseModel):
                                                      "succeeded.")
 
 
+class DayValue(BaseModel):
+    value: str | None = Field(description="Today's day of the rotation, as the source names it "
+                                          "(`1` for Infinite Campus's \"Day: 1\"). A string, since "
+                                          "some schools name them `A` and `B`. Null when there's no "
+                                          "school today.", examples=["1"])
+    date: Date = Field(description="Today, in the school's time zone.", examples=["2026-10-15"])
+    term: str | None = Field(description="Today's term. Null when there's no school today.",
+                             examples=["MP1"])
+    next_date: Date | None = Field(description="The next school day after today. Null if none is "
+                                               "known yet (the school year's last day is past).",
+                                   examples=["2026-10-16"])
+    next_day: str | None = Field(description="That day's day of the rotation.", examples=["4"])
+    updated_at: Timestamp | None = Field(description="When the source the schedule comes from "
+                                                     "last finished a successful full run (UTC). "
+                                                     "Null if it never has.")
+
+
 class NoteSettings(BaseModel):
     note: str = Field(max_length=10_000, description="The note, as plain text. Blank clears it.",
                       examples=["Asked for an extension; she said Monday is fine."])
@@ -581,8 +603,13 @@ TAGS = [
                                       "scores, and the overall GPA (Infinite Campus)."},
     {"name": "history", "description": "Every change to grades, GPAs, assignment scores and "
                                        "item statuses, kept for good."},
+    {"name": "schedule", "description": "The class schedule for each school day: which day of "
+                                        "the rotation it is and which classes meet when, as "
+                                        "Infinite Campus's \"Today's Schedule\" shows it. Not "
+                                        "to be confused with how often sources are fetched "
+                                        "(`schedule` in `GET /sources`)."},
     {"name": "courses", "description": "Classes the student is enrolled in, per source."},
-    {"name": "values", "description": "Single numbers for widgets and displays, each as plain "
+    {"name": "values", "description": "Single values for widgets and displays, each as plain "
                                       "text (`/min/…`) or JSON (`/json/…`). No token needed."},
     {"name": "status", "description": "Which sources exist, how fresh their data is, how often "
                                       "they're fetched and with what browser, and manual sync "
@@ -610,7 +637,10 @@ announcements); those additions stay in lifeapi and never reach a platform.
 | Any new comments? | `GET /comments?days=3` (class and private comments, newest first) |
 | How am I doing in my classes? | `GET /grades` |
 | What's my GPA? | `GET /json/gpa` (`value` to three decimal places, a percentage that can exceed 100; `last_seen_at` says when it was last scraped) |
-| Just a number for a widget | `GET /min/{{name}}` (plain text) or `GET /json/{{name}}` (`{{"value": …}}`), where `name` is `gpa`, `missing` (overdue in the last `days`, default 7), `next` (due in the next `days`, default 7), `due` (minutes until the soonest of those; the JSON adds its `due_at`, `title` and `course_name`, and is null when nothing is due) or `status` (failing sources; the JSON adds `minutes` since the stalest source's last successful run). Every JSON but `gpa`'s (which has `last_seen_at`) adds `updated_at`, when the stalest source it's worked out from last succeeded |
+| Just one value for a widget | `GET /min/{{name}}` (plain text) or `GET /json/{{name}}` (`{{"value": …}}`), where `name` is `gpa`, `day` (today's day of the rotation, a string such as `1`; empty, or null, when there's no school; the JSON adds `term` and the next school day's `next_date` and `next_day`), `missing` (overdue in the last `days`, default 7), `next` (due in the next `days`, default 7), `due` (minutes until the soonest of those; the JSON adds its `due_at`, `title` and `course_name`, and is null when nothing is due) or `status` (failing sources; the JSON adds `minutes` since the stalest source's last successful run). Every JSON but `gpa`'s (which has `last_seen_at`) adds `updated_at`, when the stalest source it's worked out from last succeeded |
+| What's my schedule today? | `GET /schedule/today` (`day` is the rotation day, Infinite Campus's "Day: 1"; `periods` are the classes in order, with times, teacher and room). 404 when there's no school |
+| What day is it? (rotation) | `GET /json/day` (`value`, plus the next school day's `next_day`) |
+| What's my schedule this week? | `GET /schedule?days=7` (school days only) |
 | How has my GPA changed? | `GET /history?gpa=true` (one row per change) |
 | How did my grade in X move? | `GET /grades` for its `id`, then `GET /history?id=…` (the grade and its scored assignments) |
 | Find a specific assignment | `GET /items?q=essay` |
@@ -634,7 +664,7 @@ announcements); those additions stay in lifeapi and never reach a platform.
 | `google_classroom` | Google Classroom | courses, assignments, questions, materials, announcements, comments |
 | `ap_classroom` | College Board AP Classroom | courses, assignments, quizzes (progress checks), videos |
 | `vhl` | Vista Higher Learning (VHL Central) | courses, assignments grouped by due date |
-| `infinite_campus` | Infinite Campus (school SIS) | courses and grades only, no items |
+| `infinite_campus` | Infinite Campus (school SIS) | courses, grades and the class schedule, no items |
 
 The same real-world class appears once per platform that has it, with different ids, so
 match across sources by `course_name` if you need to.
@@ -646,6 +676,9 @@ match across sources by `course_name` if you need to.
 - **Course**: a class on one source.
 - **Grade**: one course's grade for one term and grading task (e.g. `MP1` /
   `MARKING PERIOD`), with `categories` and per-assignment `entries`.
+- **ScheduleDay**: one school day's classes (`periods`, each with its course, times, teacher
+  and room) and which day of the rotation it is (`day`), with `id` the date. Every school day
+  of the year has one; weekends and holidays have none.
 
 Every record is identified by **`(source, id)`**; ids are only unique within a source.
 `course_id` refers to a course in the same source. `url` is a deep link to the record on its
@@ -658,7 +691,8 @@ as finished: {", ".join(f"`{s}`" for s in DONE_STATUSES)}. The student can mark 
 turned in or not in lifeapi (see below), so `status` can differ from `source_status`. `/items/upcoming` and
 `/items/missing` already apply this, so prefer them over filtering `status` yourself.
 
-**Time.** `due_at` and `posted_at` are ISO 8601 with a UTC offset, in the school's local time.
+**Time.** `due_at`, `posted_at`, and a schedule's `starts_at` and `ends_at` are ISO 8601 with a
+UTC offset, in the school's local time.
 When a platform gives only a date, deadlines become 23:59 and post dates 00:00 local time;
 `due_text` keeps the original wording. Record bookkeeping timestamps (`first_seen_at`,
 `last_seen_at`, run and sync times) are UTC. For datetime filters, include an offset

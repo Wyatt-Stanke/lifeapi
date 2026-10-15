@@ -66,6 +66,19 @@ CREATE TABLE IF NOT EXISTS grades (
     last_seen_at TEXT NOT NULL,
     PRIMARY KEY (source, id)
 );
+-- Class schedules (`ScheduleDay`), one row per school day, keyed by its date (`id`).
+-- Not to be confused with `schedules`, which says how often each source is fetched.
+CREATE TABLE IF NOT EXISTS schedule_days (
+    source TEXT NOT NULL,
+    id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    data TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    PRIMARY KEY (source, id)
+);
+CREATE INDEX IF NOT EXISTS schedule_days_date ON schedule_days (date);
 CREATE TABLE IF NOT EXISTS scrape_runs (
     run_id INTEGER PRIMARY KEY AUTOINCREMENT,
     source TEXT NOT NULL,
@@ -428,8 +441,17 @@ def save_result(conn: sqlite3.Connection, source: str, result: ScrapeResult,
             (g.source, g.id, g.course_name, g.term, g.model_dump_json(), ts, ts),
         )
 
+    for d in result.schedule:
+        conn.execute(
+            """INSERT INTO schedule_days (source, id, date, data, active, first_seen_at, last_seen_at)
+               VALUES (?, ?, ?, ?, 1, ?, ?)
+               ON CONFLICT (source, id) DO UPDATE SET
+                 date=excluded.date, data=excluded.data, active=1, last_seen_at=excluded.last_seen_at""",
+            (d.source, d.id, d.date.isoformat(), d.model_dump_json(), ts, ts),
+        )
+
     if not partial:
-        for table in ("courses", "items", "grades"):
+        for table in ("courses", "items", "grades", "schedule_days"):
             conn.execute(
                 f"UPDATE {table} SET active=0 WHERE source=? AND last_seen_at<?", (source, ts)
             )
